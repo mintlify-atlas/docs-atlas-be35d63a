@@ -1,0 +1,363 @@
+---
+title: "Helper Functions and Utilities"
+sidebarTitle: "Helpers"
+description: "Utility functions exported by @storesjs/stores: store inspection helpers, equality functions, the time utility, serialization, and state update utilities."
+---
+
+`@storesjs/stores` exports a collection of utility functions alongside its store creators. These helpers cover store introspection, equality checking, time conversion, JSON serialization of non-plain types, low-level state updates, and query constants.
+
+---
+
+## Store Inspection
+
+These functions let you inspect and tear down stores at runtime. They work with any store type — base stores, derived stores, query stores, persisted stores, and virtual stores.
+
+### `destroyStore`
+
+```ts
+function destroyStore(
+  store: BaseStore<unknown> | StoreApi<unknown> | QueryStore<unknown, Record<string, unknown>, unknown>,
+  options?: { clearQueryCache?: boolean }
+): void
+```
+
+Calls the appropriate reset or destroy method on a single store.
+
+- For **query stores**, calls `store.getState().reset(clearQueryCache)`.
+- For **derived stores** (which expose `destroy`), calls `store.destroy()`.
+- For all other stores, this is a no-op — base stores have no teardown by default.
+
+<ParamField body="store" type="BaseStore | StoreApi | QueryStore" required>
+  The store to destroy.
+</ParamField>
+
+<ParamField body="options.clearQueryCache" type="boolean">
+  When `true` and the store is a query store, the query cache is also cleared in
+  addition to resetting fetch state.
+</ParamField>
+
+---
+
+### `destroyStores`
+
+```ts
+function destroyStores(
+  stores:
+    | Partial<Record<string, BaseStore<unknown> | StoreApi<unknown>>>
+    | (BaseStore<unknown> | StoreApi<unknown> | undefined)[],
+  options?: {
+    clearQueryCache?: boolean;
+    skipDestroy?: (store: BaseStore<unknown> | StoreApi<unknown>) => boolean;
+  }
+): void
+```
+
+Iterates over an **array** or **object** of stores and calls `destroyStore` on each. Useful for tearing down a feature's entire set of stores in one call.
+
+<ParamField body="stores" type="array | record" required>
+  An array or plain-object record of store instances. `undefined` entries in
+  arrays are silently skipped.
+</ParamField>
+
+<ParamField body="options.clearQueryCache" type="boolean">
+  Forwarded to `destroyStore` for each query store encountered.
+</ParamField>
+
+<ParamField body="options.skipDestroy" type="(store) => boolean">
+  Predicate called for each store. When it returns `true`, that store is skipped.
+</ParamField>
+
+---
+
+### `getStoreName`
+
+```ts
+function getStoreName(store: BaseStore<unknown>): string
+```
+
+Returns a human-readable name for a store. For persisted stores, returns the `name` from the persistence options. For all other stores, returns the function's `.name` property (i.e. the variable name the store was assigned to at creation time).
+
+---
+
+### `isDerivedStore`
+
+```ts
+function isDerivedStore<T extends BaseStore<unknown> | StoreApi<unknown>>(
+  store: T
+): store is T & { destroy: () => void; flushUpdates: () => void }
+```
+
+Type guard that returns `true` when the store was created with `createDerivedStore`. Narrows the type to reveal `destroy()` and `flushUpdates()`.
+
+---
+
+### `isQueryStore`
+
+```ts
+function isQueryStore<T extends object>(
+  store: T
+): store is Extract<T, BaseStore<QueryStoreState<unknown, Record<string, unknown>, unknown>>>
+```
+
+Type guard that returns `true` when the store was created with `createQueryStore`.
+
+---
+
+### `isPersistedStore`
+
+```ts
+function isPersistedStore<T extends BaseStore<unknown> | PersistedStore<unknown>>(
+  store: T
+): store is T & { persist: PersistedStore<InferStoreState<T>>['persist'] }
+```
+
+Type guard that returns `true` when the store has an active `persist` configuration. Narrows the type to expose the full `persist` API.
+
+---
+
+### `isVirtualStore`
+
+```ts
+function isVirtualStore<T extends BaseStore<unknown> | StoreApi<unknown>>(
+  store: T
+): store is T & BaseStore<InferStoreState<T>>
+```
+
+Type guard that returns `true` when the store was created with `createVirtualStore`.
+
+---
+
+### `hasGetSnapshot`
+
+```ts
+function hasGetSnapshot<T extends BaseStore<unknown> | StoreApi<unknown>>(
+  store: T
+): store is T & { getSnapshot: () => InferStoreState<T> }
+```
+
+Type guard that returns `true` when the store exposes a `getSnapshot` method. Derived stores use `getSnapshot` to read current state while activating lazy subscriptions before the first subscriber attaches.
+
+---
+
+## Equality Functions
+
+### `shallowEqual`
+
+```ts
+function shallowEqual<U>(obj1: U, obj2: U): boolean
+```
+
+Compares two values by checking their top-level keys with `Object.is`. For non-objects, falls back to strict equality. Returns `true` when all top-level key/value pairs are identical.
+
+Use `shallowEqual` as the `equalityFn` for selectors that return a **new object reference** on every call (e.g. `state => ({ a: state.a, b: state.b })`). Without it, every state change would appear as a new value even when the contents are the same.
+
+**Worklet-compatible** — safe to use inside React Native Reanimated worklets.
+
+---
+
+### `deepEqual`
+
+```ts
+function deepEqual<U>(obj1: U, obj2: U): boolean
+```
+
+Recursively compares two values. For non-objects, uses strict equality. For objects, verifies that both have the same set of keys and that each corresponding value is itself deeply equal.
+
+Use `deepEqual` for **nested structures** where `shallowEqual` would miss differences inside nested objects. Note that `deepEqual` is more expensive than `shallowEqual` — prefer `shallowEqual` when your state shape is shallow.
+
+**Worklet-compatible** — safe to use inside React Native Reanimated worklets.
+
+---
+
+## Time Utility
+
+### `time`
+
+```ts
+const time: {
+  ms: (ms: number) => number;
+  seconds: (seconds: number) => number;
+  minutes: (minutes: number) => number;
+  hours: (hours: number) => number;
+  days: (days: number) => number;
+  weeks: (weeks: number) => number;
+  infinity: typeof Infinity;
+  zero: 0;
+}
+```
+
+A worklet-compatible utility object for expressing time durations as milliseconds. All methods convert their input unit to milliseconds. `time.infinity` and `time.zero` are plain constants.
+
+```ts
+staleTime: time.minutes(5)   // 300_000
+retryDelay: time.seconds(10) // 10_000
+cacheTime: time.days(7)      // 604_800_000
+```
+
+**Worklet-compatible** — all `time` methods include a `'worklet'` directive and are safe to call inside Reanimated worklets.
+
+---
+
+## Query Param Helper
+
+### `queryParam`
+
+```ts
+function queryParam<T, State>(
+  value: NonFunction<T> | ReactiveParam<T, State>,
+  options: { key: QueryParamKey<T> }
+): QueryParamConfig<T, State>
+```
+
+Wraps a query parameter when the value passed to the fetcher and the value used to build the query key need to differ.
+
+<ParamField body="value" type="NonFunction<T> | ReactiveParam<T, State>" required>
+  The parameter value or a reactive getter that produces the value.
+</ParamField>
+
+<ParamField body="options.key" type="QueryParamKey<T>" required>
+  Controls how this parameter participates in the query key:
+
+  - `false` — exclude this parameter from the query key entirely.
+  - `(value: T) => unknown` — a function that returns the key representation
+    of the value (e.g. extracting an `id` from a full object).
+</ParamField>
+
+```ts
+// Exclude a large object from the query key, keying on its id instead:
+params: {
+  user: queryParam(currentUser, { key: user => user.id }),
+}
+```
+
+---
+
+## Serialization
+
+These functions are `JSON.stringify`/`JSON.parse` replacer and reviver pairs that add support for `Map` and `Set` values. Pass them as `serializer`/`deserializer` in your persistence config when your store state contains non-plain JavaScript types.
+
+### `replacer`
+
+```ts
+function replacer(key: string, value: unknown): unknown
+```
+
+A `JSON.stringify` replacer that converts `Map` instances to `{ __type: 'Map', entries: [...] }` and `Set` instances to `{ __type: 'Set', values: [...] }`.
+
+### `reviver`
+
+```ts
+function reviver(key: string, value: unknown): unknown
+```
+
+A `JSON.parse` reviver that reconstructs `Map` and `Set` instances from the tagged objects written by `replacer`.
+
+```ts
+import { replacer, reviver } from '@storesjs/stores';
+
+createBaseStore(
+  set => ({ tags: new Set(['a', 'b']), lookup: new Map() }),
+  {
+    storageKey: 'my-store',
+    serializer: value => JSON.stringify(value, replacer),
+    deserializer: raw => JSON.parse(raw as string, reviver),
+  }
+);
+```
+
+---
+
+## State Update
+
+### `applyStateUpdate`
+
+```ts
+function applyStateUpdate<S>(state: S, ...setArgs: SetStateArgs<S>): S
+```
+
+Low-level helper that applies a partial or full state update to an existing state value and returns the merged result. Mirrors the behaviour of `setState` without touching a store:
+
+- If `replace` is `true`, returns the update directly (or calls it as a function with the current state).
+- Otherwise, merges the partial update into the current state shallowly.
+- Returns the original `state` reference unchanged when the update produces no diff (`Object.is` check).
+
+This is primarily useful when building custom middleware or testing state transitions in isolation.
+
+---
+
+## Error Handling
+
+### `StoresError`
+
+```ts
+class StoresError extends Error {
+  cause?: unknown;
+  constructor(message: string, cause?: unknown);
+}
+```
+
+The error class used by the framework for all errors it throws or reports. The `name` property is always `'StoresError'`. When an underlying error caused the failure, it is available as `cause`.
+
+Use `instanceof StoresError` in error boundaries or error handlers to distinguish framework errors from application errors:
+
+```ts
+try {
+  await store.persist.rehydrate();
+} catch (err) {
+  if (err instanceof StoresError) {
+    // Framework-level storage failure
+  } else {
+    throw err;
+  }
+}
+```
+
+---
+
+## Query Constants
+
+### `QueryStatuses`
+
+```ts
+const QueryStatuses = {
+  Error: 'error',
+  Idle: 'idle',
+  Loading: 'loading',
+  Success: 'success',
+} as const;
+```
+
+A frozen object of named constants for each possible `QueryStatus` value. Prefer these constants over raw string literals when branching on query state:
+
+```ts
+if (store.getState().status === QueryStatuses.Loading) { ... }
+```
+
+---
+
+### `defaultRetryDelay`
+
+```ts
+function defaultRetryDelay(retryCount: number): number
+function defaultRetryDelay(
+  retryCount: number,
+  options?: { baseDelay?: number; maxDelay?: number }
+): number
+```
+
+The default exponential backoff function used by all query stores. Starts at `baseDelay` (default `5s`), doubles on each retry, and is capped at `maxDelay` (default `5m`):
+
+```
+delay = Math.min(baseDelay * 2^retryCount, maxDelay)
+```
+
+Export and reference it directly to build a custom `retryDelay` that extends the default behaviour:
+
+```ts
+import { defaultRetryDelay, time } from '@storesjs/stores';
+
+retryDelay: (retryCount, error) => {
+  if (error.message.includes('rate limit')) return time.minutes(1);
+  return defaultRetryDelay(retryCount);
+}
+```

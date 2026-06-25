@@ -1,0 +1,277 @@
+---
+title: "Chrome Extension Plugin for Stores"
+sidebarTitle: "Chrome Extension"
+description: "Use @storesjs/stores/chrome to persist and sync store state across Chrome extension contexts using chrome.storage and a first-class sync engine."
+---
+
+The Chrome Extension plugin ships two building blocks — `ChromeStorageAdapter` and `ChromeExtensionSyncEngine` — plus the `createSyncedChromeStorage` convenience factory that wires them together. Together they let you persist store state to any `chrome.storage` area and propagate changes automatically across every extension context: background service worker, popup, options page, and content scripts. Because Chrome itself fires `chrome.storage.onChanged` events whenever storage is written, no additional message-passing infrastructure is needed.
+
+## Installation
+
+Import directly from the `@storesjs/stores/chrome` sub-path:
+
+```ts
+import {
+  ChromeStorageAdapter,
+  ChromeExtensionSyncEngine,
+  createSyncedChromeStorage,
+} from '@storesjs/stores/chrome';
+```
+
+---
+
+## API Reference
+
+### `ChromeStorageAdapter`
+
+`ChromeStorageAdapter` implements `AsyncStorageInterface` and maps store persistence operations onto a `chrome.storage` area. Every read and write returns a `Promise`, so the adapter works correctly in both Manifest V2 and Manifest V3 service workers.
+
+```ts
+type AreaName = 'local' | 'managed' | 'session' | 'sync';
+
+type ChromeStorageAdapterOptions = {
+  /** Which chrome.storage area to target. Defaults to 'local'. */
+  area?: AreaName;
+  /** Key prefix applied to every entry written to storage. */
+  storageKeyPrefix?: string;
+};
+```
+
+**Constructor**
+
+```ts
+const storage = new ChromeStorageAdapter({ area: 'local' });
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `area` | `AreaName` | `'local'` | The `chrome.storage` area to read from and write to. |
+| `storageKeyPrefix` | `string` | `'stores/'` | Namespaces every key to avoid collisions with other extensions or libraries. |
+
+The adapter exposes `async = true`, so `@storesjs/stores` automatically awaits all storage operations before reporting hydration as complete.
+
+<Warning>
+  The `'managed'` area is **read-only** and is controlled by enterprise policy. Attempting to write to it will throw a runtime error. Use `'managed'` only when you need to read policy-controlled values, not for general store persistence.
+</Warning>
+
+---
+
+### `ChromeExtensionSyncEngine`
+
+`ChromeExtensionSyncEngine` implements `SyncEngine` and uses `chrome.storage.onChanged` as its transport layer. When any context writes to `chrome.storage`, Chrome dispatches an `onChanged` event in every other open context. The engine listens for those events and forwards the changed fields into the store's sync pipeline automatically — no WebSocket, BroadcastChannel, or custom messaging needed.
+
+```ts
+type ChromeExtensionSyncEngineOptions =
+  | ChromeStorageAdapterOptions           // { area?, storageKeyPrefix? }
+  | { storage: ChromeStorageAdapter };    // share an existing adapter instance
+```
+
+**Constructor**
+
+```ts
+// Option A — pass area/prefix directly
+const syncEngine = new ChromeExtensionSyncEngine({ area: 'local' });
+
+// Option B — share an existing adapter (recommended to keep keys in sync)
+const storage = new ChromeStorageAdapter({ area: 'local' });
+const syncEngine = new ChromeExtensionSyncEngine({ storage });
+```
+
+The engine generates a unique `sessionId` on construction and uses it to filter out self-originated storage changes, preventing stores from re-applying their own writes.
+
+`publish` is `null` because broadcasting is handled implicitly by `chrome.storage` writes — the engine never needs to push updates out explicitly.
+
+<Note>
+  `ChromeExtensionSyncEngine` sets `injectStorageMetadata = true` internally. This causes the persist middleware to embed an origin session ID, timestamp, and changed-field list into each persisted value. Without this metadata the engine cannot distinguish remote updates from local ones, and cross-context sync will not function correctly. You do not need to set `injectStorageMetadata` yourself when using this engine.
+</Note>
+
+---
+
+### `createSyncedChromeStorage(options?)`
+
+A convenience factory that creates a matched `ChromeStorageAdapter` and `ChromeExtensionSyncEngine` pair, with the engine automatically configured to share the adapter's `area` and `storageKeyPrefix`.
+
+```ts
+function createSyncedChromeStorage(options?: ChromeStorageAdapterOptions): {
+  storage: ChromeStorageAdapter;
+  syncEngine: ChromeExtensionSyncEngine;
+};
+```
+
+<Tip>
+  `createSyncedChromeStorage` is the recommended starting point for most extensions. It ensures the storage adapter and sync engine always target the same area and key prefix, eliminating a common source of misconfiguration.
+</Tip>
+
+---
+
+## Setup Walkthrough
+
+<Steps>
+
+<Step title="Create the storage and sync engine">
+
+Call `createSyncedChromeStorage` once per extension, ideally in a shared module that every context imports:
+
+```ts
+// shared/chromeStorage.ts
+import { createSyncedChromeStorage } from '@storesjs/stores/chrome';
+
+export const { storage, syncEngine } = createSyncedChromeStorage({ area: 'local' });
+```
+
+</Step>
+
+<Step title="Configure global defaults (optional)">
+
+Pass the adapter to `configureStores` to use it as the default storage for every store in the extension without repeating it per-store:
+
+```ts
+// shared/configureStores.ts
+import { configureStores } from '@storesjs/stores';
+import { createSyncedChromeStorage } from '@storesjs/stores/chrome';
+
+configureStores({
+  storage: createSyncedChromeStorage({ area: 'local' }),
+});
+```
+
+</Step>
+
+<Step title="Create a store with per-store storage and sync">
+
+If you prefer explicit per-store configuration — or need different stores to target different areas — pass `storage` and `sync` directly to `createBaseStore`:
+
+```ts
+// shared/settingsStore.ts
+import { createBaseStore } from '@storesjs/stores';
+import { ChromeStorageAdapter, ChromeExtensionSyncEngine } from '@storesjs/stores/chrome';
+
+type Settings = {
+  theme: 'dark' | 'light';
+  setTheme: (theme: 'dark' | 'light') => void;
+};
+
+const chromeStorage = new ChromeStorageAdapter({ area: 'local' });
+const syncEngine = new ChromeExtensionSyncEngine({ storage: chromeStorage });
+
+export const useSettingsStore = createBaseStore<Settings>(
+  set => ({
+    theme: 'dark',
+    setTheme: theme => set({ theme }),
+  }),
+  {
+    storageKey: 'settings',
+    storage: chromeStorage,
+    sync: { engine: syncEngine },
+  }
+);
+```
+
+</Step>
+
+<Step title="Use the store in any extension context">
+
+Because sync is driven by `chrome.storage.onChanged`, the same store definition works identically in your popup, options page, background service worker, or content script. Import the store and use it like any other Stores hook:
+
+```tsx
+// popup/ThemeToggle.tsx
+import { useSettingsStore } from '../shared/settingsStore';
+
+export function ThemeToggle() {
+  const theme = useSettingsStore(s => s.theme);
+  const setTheme = useSettingsStore(s => s.setTheme);
+
+  return (
+    <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+      Current theme: {theme}
+    </button>
+  );
+}
+```
+
+Any context that changes `theme` will have the update reflected in every other open context automatically.
+
+</Step>
+
+</Steps>
+
+---
+
+## Real-World Example
+
+The following pattern is taken directly from the `missionControlStore` in the Chrome extension example. It uses `createSyncedChromeStorage` to share a single storage/engine pair across a complex store with many synced fields:
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+import { createSyncedChromeStorage } from '@storesjs/stores/chrome';
+
+const { storage, syncEngine } = createSyncedChromeStorage();
+
+export const useMissionControlStore = createBaseStore<MissionControlState>(
+  set => ({
+    theme: 'solstice',
+    tasks: [],
+    timeline: [],
+    // ... actions
+    setTheme: (theme, identity) => set({ theme }),
+  }),
+  {
+    storage,
+    storageKey: 'missionControlStore',
+    sync: {
+      engine: syncEngine,
+      merge: { crew: mergeCrew }, // optional per-field merge strategy
+    },
+  }
+);
+```
+
+---
+
+## Sync Behavior
+
+The sync transport is entirely passive: the `ChromeExtensionSyncEngine` attaches a single `chrome.storage.onChanged` listener when the first store registers. When any context writes to storage, Chrome delivers the change event — including the previous and new values — to all other contexts that share the same extension origin.
+
+The engine processes each change event by:
+
+1. **Checking the origin.** If `syncMetadata.origin` matches the current session's ID, the event was self-originated and is discarded.
+2. **Extracting changed fields.** Field-level metadata embedded in the persisted value identifies exactly which fields changed. When metadata is absent (e.g., data written by an older version), the engine falls back to a full state diff against the previous value.
+3. **Applying the update.** Changed fields are forwarded to the store's sync pipeline, which handles conflict resolution and subscriber notification.
+
+The listener is removed automatically when all registered stores are destroyed, or when `syncEngine.destroy()` is called explicitly.
+
+---
+
+## Testing
+
+A set of mock Chrome storage utilities (`mockChromeStorage.testUtils.ts`) is available in the source for unit testing stores that use `ChromeStorageAdapter`. The mock mirrors real Chromium semantics: it performs deep equality checks before firing change events, dispatches changes asynchronously via microtasks, and produces immutable snapshot payloads — matching the documented behavior of `chrome.storage.local` and `chrome.storage.session`.
+
+<Note>
+  The mock utilities are **test-only** helpers. They are not exported from the public `@storesjs/stores/chrome` bundle and should only be imported in test environments (e.g., via a `vitest` or `jest` setup file).
+</Note>
+
+---
+
+## Type Reference
+
+```ts
+// Storage area names
+type AreaName = 'local' | 'managed' | 'session' | 'sync';
+
+// ChromeStorageAdapter constructor options
+type ChromeStorageAdapterOptions = {
+  area?: AreaName;
+  storageKeyPrefix?: string;
+};
+
+// ChromeExtensionSyncEngine constructor options
+type ChromeExtensionSyncEngineOptions =
+  | ChromeStorageAdapterOptions
+  | { storage: ChromeStorageAdapter };
+
+// createSyncedChromeStorage return type
+type SyncedChromeStorage = {
+  storage: ChromeStorageAdapter;
+  syncEngine: ChromeExtensionSyncEngine;
+};
+```

@@ -1,0 +1,224 @@
+---
+title: "Derived Stores: Computed Reactive Values"
+sidebarTitle: "Derived Store"
+description: "Derived stores compute values from one or more source stores using runtime dependency tracking. They re-run only when their inputs change."
+---
+
+Derived stores compute values from other stores and stay in sync automatically. Rather than manually subscribing to each source and computing the result yourself, you describe *what* the derived value depends on and the framework handles *when* to recompute. Dependencies are tracked at runtime, so the store re-runs its derive function only when the specific state slices it read actually change. When no consumers are observing the derived store, it tears itself down entirely — no subscriptions, no timers, no wasted work.
+
+## The `$` Accessor
+
+The derive function receives a single argument — conventionally named `$` — that reads state from any store and registers it as a dependency. It has two modes:
+
+### Proxy-based (auto-built selectors)
+
+Destructure or access properties directly on the return value of `$(store)`. The framework builds fine-grained selectors automatically based on which properties you access:
+
+```ts
+import { createDerivedStore } from '@storesjs/stores';
+
+const userSummaryStore = createDerivedStore($ => {
+  const { displayName, avatarUrl } = $(userStore);
+  const theme = $(settingsStore).appearance.theme;
+  return { displayName, avatarUrl, theme };
+});
+```
+
+Only `displayName`, `avatarUrl`, and `appearance.theme` trigger a re-derive — changes to other parts of `userStore` or `settingsStore` are ignored.
+
+### Selector-based
+
+Pass a selector (and optionally an equality function) directly to `$` for explicit control:
+
+```ts
+import { createDerivedStore, shallowEqual } from '@storesjs/stores';
+
+const userSummaryStore = createDerivedStore($ => {
+  const user = $(userStore, s => s.user, shallowEqual);
+  const theme = $(settingsStore, s => s.appearance.theme);
+  return { user, theme };
+});
+```
+
+<Tip>
+  Use the **proxy-based** form when you want concise, property-level granularity with minimal boilerplate. Use the **selector-based** form when you need a custom equality function, want to be explicit about what triggers updates, or are working with a computed selector (e.g., filtering an array).
+</Tip>
+
+## Basic Example
+
+The example app's filtered films store derives from three base stores — the raw films data, a search query, and sort preferences — and recomputes only when any of those change:
+
+```ts
+import { createDerivedStore } from '@storesjs/stores';
+import { useFilmsStore } from './filmsStore';
+import { useSearchStore } from './searchStore';
+import { useSortStore } from './sortStore';
+
+export const useFilteredFilmsStore = createDerivedStore(
+  $ => {
+    const films = $(useFilmsStore).getData();
+    const query = $(useSearchStore).query.toLowerCase();
+    const sortBy = $(useSortStore).sortBy;
+    const sortOrder = $(useSortStore).sortOrder;
+
+    const filtered = films?.filter(film =>
+      film.title.toLowerCase().includes(query)
+    );
+    if (!filtered) return undefined;
+
+    return filtered.sort((a, b) => {
+      const aVal = sortBy === 'release_date' || sortBy === 'rt_score'
+        ? Number(a[sortBy])
+        : a[sortBy];
+      const bVal = sortBy === 'release_date' || sortBy === 'rt_score'
+        ? Number(b[sortBy])
+        : b[sortBy];
+      if (aVal < bVal) return sortOrder === 'asc' ? -1 : 1;
+      if (aVal > bVal) return sortOrder === 'asc' ? 1 : -1;
+      return 0;
+    });
+  },
+  { lockDependencies: true }
+);
+```
+
+## Composed Graph Example
+
+Derived stores compose naturally. One derived store can read from another, forming a reactive graph that updates only as far as the changed value propagates.
+
+```ts
+// Step 1: derive a formatter from user settings
+export const currencyFormatterStore = createDerivedStore($ => {
+  const { currency, locale } = $(settingsStore);
+  return new Intl.NumberFormat(locale, { currency, style: 'currency' });
+});
+
+// Step 2: derive a formatted balance using the formatter and async data
+export const accountBalanceStore = createDerivedStore($ => {
+  const balance = $(accountStore).getData()?.balance ?? 0;
+  const formatter = $(currencyFormatterStore);
+  return formatter.format(balance);
+});
+
+// Step 3: consume the leaf-node derived store in a component
+function AccountSummary() {
+  const balance = accountBalanceStore();
+  return <Text>Balance: {balance}</Text>;
+}
+```
+
+When `currency` changes in `settingsStore`, `currencyFormatterStore` recomputes, which triggers `accountBalanceStore` to recompute, which re-renders `AccountSummary`. Neither step runs if there are no observers.
+
+## Using in React and Outside React
+
+In the React build, derived stores are callable hooks just like base stores:
+
+```tsx
+// React — re-renders only when the derived value changes
+const results = useFilteredFilmsStore();
+const count = useFilteredFilmsStore(s => s?.length ?? 0);
+```
+
+Outside React, use the standard store API:
+
+```ts
+// Read derived state synchronously (activates the store if needed)
+const results = useFilteredFilmsStore.getState();
+
+// Subscribe to changes
+const unsubscribe = useFilteredFilmsStore.subscribe(
+  s => s?.length,
+  (count, prev) => console.log('Result count:', count)
+);
+```
+
+## Lifecycle
+
+Derived stores are **lazy** — the derive function never runs until something observes the store. Once observed, the store subscribes to its dependencies and stays live. When the last consumer unsubscribes, the store unsubscribes from all dependencies and cleans up automatically.
+
+You can also manage lifecycle explicitly:
+
+```ts
+// Force-destroy the store and all its subscriptions
+userSummaryStore.destroy();
+
+// Flush all pending updates immediately (only relevant for debounced stores)
+userSummaryStore.flushUpdates();
+```
+
+## `DeriveOptions`
+
+The second argument to `createDerivedStore` is either an equality function or a `DeriveOptions` config object:
+
+```ts
+export const searchResultsStore = createDerivedStore(
+  $ => {
+    const query = $(searchStore).query.trim().toLowerCase();
+    const items = $(itemsStore).items;
+    return findResults(query, items);
+  },
+  {
+    equalityFn: shallowEqual,
+    debounce: { delay: 150, leading: false, trailing: true },
+    lockDependencies: true,
+    keepAlive: false,
+    debugMode: false,
+  }
+);
+```
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `equalityFn` | `(a, b) => boolean` | `Object.is` | Controls when the derived value is considered changed |
+| `debounce` | `number \| DebounceOptions` | `0` | Delay (ms) before re-deriving after a dependency changes |
+| `lockDependencies` | `boolean` | `false` | Freeze the dependency graph after the first run |
+| `keepAlive` | `boolean` | `false` | Prevent auto-destroy when there are no consumers |
+| `debugMode` | `boolean \| 'verbose'` | `false` | Log dependency tracking info to the console |
+
+### Debounce Options
+
+When `debounce` is an object rather than a plain number, it accepts the full `DebounceOptions` shape:
+
+```ts
+debounce: {
+  delay: 200,
+  leading: false,
+  trailing: true,
+  maxWait: 1000,
+}
+```
+
+## `lockDependencies`
+
+By default, each time the derive function runs, the framework tears down existing subscriptions and rebuilds them based on what `$` was called with in that run. This allows conditional dependencies:
+
+```ts
+// Dependencies change depending on the value of `isLoggedIn`
+const store = createDerivedStore($ => {
+  const { isLoggedIn } = $(authStore);
+  if (!isLoggedIn) return null;
+  return $(userProfileStore).displayName;
+});
+```
+
+When `lockDependencies: true` is set, subscriptions are established once during the first run and reused for all subsequent runs. This avoids the overhead of regenerating selectors and subscription churn — a useful optimization for stores whose dependencies are always the same set of calls.
+
+<Warning>
+  When `lockDependencies: true` is set, **all `$` calls must be consistent and top-level** — they must always execute in the same order, every time the derive function runs. Conditional `$` calls (e.g., inside an `if` block) will not work correctly because the later-run dependencies will not have their subscriptions set up. Only enable `lockDependencies` when you are confident your dependency graph is static.
+</Warning>
+
+## `keepAlive`
+
+By default, a derived store destroys itself when no consumers remain. Set `keepAlive: true` to keep the store live and subscribed indefinitely — useful when the derived store acts as a permanent cache that is read intermittently.
+
+```ts
+export const globalFormatterStore = createDerivedStore(
+  $ => {
+    const { currency, locale } = $(settingsStore);
+    return new Intl.NumberFormat(locale, { currency, style: 'currency' });
+  },
+  { keepAlive: true }
+);
+```
+
+Even with `keepAlive: true`, calling `globalFormatterStore.destroy()` will fully tear down the store.

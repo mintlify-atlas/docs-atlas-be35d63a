@@ -1,0 +1,106 @@
+---
+title: "Virtual Stores: Dynamic Store Composition"
+sidebarTitle: "Virtual Store"
+description: "Virtual stores maintain a stable interface while swapping the underlying store instance when dependencies change. Subscriptions rebind automatically."
+---
+
+Virtual stores solve a specific problem: you have a family of store instances — each holding the state for a different entity, user, or address — and you want to expose a single stable store reference that tracks whichever instance is currently active. When the active instance changes, every subscriber automatically rebinds to the new one with no manual rewiring. From the outside, a virtual store looks and behaves exactly like any other store.
+
+## When to Use a Virtual Store
+
+Use a virtual store when the *which* store to read from is itself reactive state. Common scenarios include:
+
+- Per-wallet or per-account data where the active wallet changes
+- Per-user profiles that are fetched and cached as separate store instances
+- Any pattern where you factory-create stores keyed by a dynamic identifier
+
+<Note>
+  If you just want to compute a value from other stores, use a [derived store](/concepts/derived-store) instead. Virtual stores are specifically for cases where the *store instance itself* needs to change — not just the derived value.
+</Note>
+
+## Creating a Virtual Store
+
+`createVirtualStore` accepts a derive function that uses the same `$` accessor as derived stores. The function should return a store instance:
+
+```ts
+import { createVirtualStore } from '@storesjs/stores';
+import { walletsStore } from './walletsStore';
+import { createUserAssetsStore } from './userAssetsStore';
+
+export const userAssetsStore = createVirtualStore($ => {
+  const address = $(walletsStore).accountAddress;
+  return createUserAssetsStore(address);
+});
+```
+
+Whenever `walletsStore.accountAddress` changes, the derive function re-runs, `createUserAssetsStore` is called with the new address, and all active subscriptions on `userAssetsStore` rebind to the new backing store automatically.
+
+## How It Works
+
+<Steps>
+  <Step title="Lazy initialization">
+    The derive function does not run until something reads from or subscribes to the virtual store. If `userAssetsStore.getState()` is never called, `createUserAssetsStore` is never invoked.
+  </Step>
+  <Step title="Dependency tracking">
+    When the virtual store first activates, it subscribes to the reactive dependencies accessed via `$` — in the example above, `walletsStore.accountAddress`. This is the same runtime tracking mechanism used by derived stores.
+  </Step>
+  <Step title="Instance swap">
+    When a tracked dependency changes, the derive function re-runs and returns a new store instance. The virtual store atomically replaces the old backing store with the new one.
+  </Step>
+  <Step title="Subscription rebind">
+    All existing subscribers — React components, manual `subscribe` callbacks — are seamlessly transferred to the new backing store. No manual cleanup or re-subscription is needed.
+  </Step>
+</Steps>
+
+## Method Overrides
+
+You can customize the `getState` or `setState` behavior of the virtual store by passing an overrides factory as the second argument. The factory receives a `getStore` function that returns the current backing store instance:
+
+```ts
+export const userAssetsStore = createVirtualStore(
+  $ => {
+    const address = $(walletsStore).accountAddress;
+    return createUserAssetsStore(address);
+  },
+  getStore => ({
+    getState: () => {
+      const state = getStore().getState();
+      return { ...state, address: walletsStore.getState().accountAddress };
+    },
+  })
+);
+```
+
+This is useful when you want to inject additional computed properties or transform the state before it is exposed through the virtual store's interface.
+
+## Persistence
+
+Virtual stores expose the `persist` property of the underlying backing store, if it has one. This means persistence methods (`rehydrate`, `hasHydrated`, `clearStorage`, etc.) are available on the virtual store and delegate to the current backing instance.
+
+## `lockDependencies` Default
+
+<Warning>
+  Unlike derived stores (where `lockDependencies` defaults to `false`), virtual stores default to **`lockDependencies: true`**. This means the dependency graph is locked after the first derive run. All `$` calls in your derive function must be **consistent and top-level** — they must execute in the same order every time the function runs.
+
+  Conditional `$` calls (e.g., inside an `if` block) will not work correctly because any dependencies that are skipped on the first run will never have their subscriptions established. If your derive function has dynamic dependencies, set `lockDependencies: false` explicitly.
+</Warning>
+
+```ts
+// Safe — single top-level $ call, always executes
+export const userAssetsStore = createVirtualStore($ => {
+  const address = $(walletsStore).accountAddress;
+  return createUserAssetsStore(address);
+});
+
+// Opt out if your dependencies are truly conditional
+export const dynamicStore = createVirtualStore(
+  $ => {
+    const { mode } = $(configStore);
+    if (mode === 'admin') return $(adminStoreFactory).store;
+    return $(userStoreFactory).store;
+  },
+  { lockDependencies: false }
+);
+```
+
+The `options` object also accepts `debugMode: boolean` to log dependency tracking information to the console during development.

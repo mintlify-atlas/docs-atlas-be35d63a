@@ -1,0 +1,176 @@
+---
+title: "Using Stores in React Native"
+sidebarTitle: "React Native"
+description: "Set up @storesjs/stores in a React Native project. The react-native package condition is applied automatically; MMKV handles native storage."
+---
+
+`@storesjs/stores` works in React Native with the same API you use on the web. The Metro bundler picks up the `react-native` package export condition automatically, so the native-tuned build is selected without any special imports or configuration. Persistence, sync, derived stores, and query stores all behave identically — MMKV replaces `localStorage` as the storage backend, and internal batching adapts to React Native's scheduler.
+
+## Automatic Package Condition
+
+Metro resolves the `react-native` condition from `package.json` exports, which points to the native-optimized build:
+
+```ts
+// Same import on every platform — Metro selects the right build automatically
+import { createBaseStore, configureStores } from '@storesjs/stores';
+```
+
+You do not need to change your import paths, add aliases, or configure anything in `metro.config.js`.
+
+## Installing MMKV
+
+`react-native-mmkv` is the default storage backend for persisted stores on React Native. It is listed as an optional peer dependency and must be installed separately:
+
+```bash
+npm install react-native-mmkv
+```
+
+After installation, pod install for iOS:
+
+```bash
+cd ios && pod install
+```
+
+Once `react-native-mmkv` is available, `@storesjs/stores` loads it automatically when a persisted store is first accessed. No further setup is required.
+
+<Note>
+`react-native-mmkv` is a **peer dependency** — it will not be installed automatically when you install `@storesjs/stores`. If it is missing and a persisted store is created, the framework throws a descriptive error at runtime pointing to the installation steps.
+</Note>
+
+## Persistence on React Native
+
+Persistence works identically to web. Add `storageKey` to your store options and MMKV takes over transparently:
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+
+type Settings = {
+  currency: string;
+  locale: string;
+  setCurrency: (currency: string) => void;
+};
+
+export const settingsStore = createBaseStore<Settings>(
+  set => ({
+    currency: 'USD',
+    locale: 'en-US',
+    setCurrency: currency => set({ currency }),
+  }),
+  {
+    storageKey: 'settings',
+    partialize: state => ({ currency: state.currency, locale: state.locale }),
+  }
+);
+```
+
+MMKV is synchronous, so `setState` returns `void` (not `Promise<void>`), and there is no need to await persistence operations.
+
+## Batching
+
+React Native uses `unstable_batchedUpdates` from `react-native` for batching store subscriber notifications. The native build imports this automatically, so multiple state updates within the same synchronous block are batched into a single render pass — no configuration needed.
+
+## Write Throttling
+
+On mobile devices, storage I/O is more expensive than on desktop browsers. The default `persistThrottleMs` values reflect this:
+
+| Platform | Default `persistThrottleMs` |
+|---|---|
+| iOS | 3 000 ms (3 seconds) |
+| Android | 5 000 ms (5 seconds) |
+| Web | No default throttle |
+
+You can override this per-store. Decrease it for state that must be durable immediately; increase it for state that changes frequently and can tolerate a longer flush window:
+
+```ts
+export const positionStore = createBaseStore<PositionState>(
+  set => ({
+    lat: 0,
+    lng: 0,
+    setPosition: (lat, lng) => set({ lat, lng }),
+  }),
+  {
+    storageKey: 'map-position',
+    partialize: state => ({ lat: state.lat, lng: state.lng }),
+    persistThrottleMs: 1_000, // flush every second for location data
+  }
+);
+```
+
+## Custom MMKV Instance
+
+If your app already uses a custom MMKV instance — for example one with encryption enabled — you can wrap it in a `SyncStorageInterface` and pass it to `configureStores`:
+
+```ts
+import { configureStores } from '@storesjs/stores';
+import { MMKV } from 'react-native-mmkv';
+import type { SyncStorageInterface } from '@storesjs/stores';
+
+const mmkv = new MMKV({ id: 'myapp', encryptionKey: 'secret' });
+
+const mmkvAdapter: SyncStorageInterface<string> = {
+  clearAll: () => mmkv.clearAll(),
+  contains: key => mmkv.contains(key),
+  delete: key => mmkv.delete(key),
+  get: key => mmkv.getString(key),
+  getAllKeys: () => mmkv.getAllKeys(),
+  set: (key, value) => mmkv.set(key, value),
+};
+
+configureStores({ storage: mmkvAdapter });
+```
+
+All stores will then use your custom MMKV instance instead of the auto-detected default.
+
+## Full Example
+
+```ts
+import { createBaseStore, createQueryStore, configureStores } from '@storesjs/stores';
+
+// Configure once in your app entry file
+configureStores({
+  storageKeyPrefix: 'myapp:',
+});
+
+// Base store with persistence
+export const themeStore = createBaseStore(
+  set => ({
+    mode: 'light' as 'light' | 'dark',
+    setMode: (mode: 'light' | 'dark') => set({ mode }),
+  }),
+  {
+    storageKey: 'theme',
+    persistThrottleMs: 500,
+  }
+);
+
+// Query store — persistence and fetching work the same as on web
+export const profileStore = createQueryStore(
+  {
+    fetcher: fetchProfile,
+    params: { userId: $ => $(authStore).userId },
+    staleTime: 5 * 60 * 1000,
+  },
+  { storageKey: 'profile' }
+);
+```
+
+```tsx
+import { View, Text } from 'react-native';
+
+function ThemeToggle() {
+  const mode = themeStore(s => s.mode);
+  const setMode = themeStore(s => s.setMode);
+
+  return (
+    <View>
+      <Text onPress={() => setMode(mode === 'light' ? 'dark' : 'light')}>
+        Current theme: {mode}
+      </Text>
+    </View>
+  );
+}
+```
+
+<Tip>
+Call `configureStores` as early as possible in your app's entry point — before any store module is imported. In a React Native app this is typically `index.js` or `App.tsx`, above the root component definition. The framework locks its configuration on the first store creation, so any `configureStores` call that comes after will throw in development.
+</Tip>

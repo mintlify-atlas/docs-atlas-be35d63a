@@ -1,0 +1,124 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Stores",
+  "projectDescription": "A reactive state framework for React and React Native that composes base, derived, and query stores into a lazy, dependency-tracked graph built on Zustand's store model.",
+  "theme": "luma",
+  "primaryColor": "#6366F1",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/base-store",
+              "concepts/derived-store",
+              "concepts/query-store",
+              "concepts/virtual-store"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/persistence",
+              "guides/sync",
+              "guides/react-native",
+              "guides/vanilla"
+            ]
+          },
+          {
+            "group": "Plugins",
+            "pages": [
+              "plugins/chrome-extension"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Store Creators",
+            "pages": [
+              "api/create-base-store",
+              "api/create-derived-store",
+              "api/create-query-store",
+              "api/create-virtual-store"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/configure-stores",
+              "api/create-store-actions",
+              "api/hooks",
+              "api/helpers"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api/types"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Three store types — base (local state), derived (computed), and query (async data) — that form a composed reactive graph",
+    "Runtime dependency tracking via a `$` accessor that subscribes stores to only the state they read",
+    "Lazy evaluation: stores only compute and subscribe when observed; automatically clean up when unused",
+    "Built-in persistence with sync and async storage adapters (localStorage, MMKV, Chrome storage)",
+    "Cross-tab and cross-context sync engine with conflict resolution and session-aware metadata",
+    "React and React Native support: stores double as callable React hooks in the React build",
+    "Vanilla (no-React) build available via the `vanilla` package condition",
+    "Chrome Extension plugin with `ChromeStorageAdapter` and `ChromeExtensionSyncEngine`",
+    "Type-safe query parameters with automatic query-key generation and reactive refetching",
+    "Virtual stores that rebind subscriptions when the underlying store instance changes"
+  ],
+  "publicApiSurface": [
+    "createBaseStore(createState, options?)",
+    "createDerivedStore(deriveFunction, optionsOrEqualityFn?)",
+    "createQueryStore(config, stateCreatorOrOptions?, options?)",
+    "createVirtualStore(createStore, overridesOrOptions?, options?)",
+    "configureStores(config)",
+    "createStoreActions(store, bundledMethods?)",
+    "useListen(store, selector, react, optionsOrEqualityFn?)",
+    "useStableValue(init)",
+    "destroyStore(store, options?)",
+    "destroyStores(stores, options?)",
+    "getStoreName(store)",
+    "isDerivedStore(store)",
+    "isQueryStore(store)",
+    "isPersistedStore(store)",
+    "isVirtualStore(store)",
+    "hasGetSnapshot(store)",
+    "queryParam(value, options)",
+    "getQueryKey(params)",
+    "parseQueryKey(key)",
+    "defaultRetryDelay",
+    "QueryStatuses",
+    "shallowEqual(a, b)",
+    "deepEqual(a, b)",
+    "time",
+    "applyStateUpdate(setState, args)",
+    "replacer(key, value)",
+    "reviver(key, value)",
+    "StoresError",
+    "ChromeStorageAdapter",
+    "ChromeExtensionSyncEngine",
+    "createSyncedChromeStorage()"
+  ]
+}

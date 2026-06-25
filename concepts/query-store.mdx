@@ -1,0 +1,277 @@
+---
+title: "Query Stores: Reactive Async Data Fetching"
+sidebarTitle: "Query Store"
+description: "Query stores fetch, cache, and revalidate async data reactively. Parameters are tracked at runtime so the store refetches automatically when they change."
+---
+
+Query stores manage the full lifecycle of remote data: fetching, caching, background revalidation, retries, and parameter-driven refetching. They share the same store interface as base and derived stores, so they compose naturally into the rest of your state graph. When a reactive parameter changes — such as an authenticated user's ID — the store automatically refetches. When no components are observing the store, it stays idle and does nothing.
+
+## Creating a Query Store
+
+Pass a config object to `createQueryStore` with at minimum a `fetcher` function:
+
+```ts
+import { createQueryStore, time } from '@storesjs/stores';
+
+export const useFilmsStore = createQueryStore<Film[]>(
+  {
+    fetcher: fetchFilms,
+    staleTime: time.hours(1),
+  },
+  { storageKey: 'films' }
+);
+
+async function fetchFilms(): Promise<Film[]> {
+  const res = await fetch('https://ghibliapi.vercel.app/films');
+  if (!res.ok) throw new Error('Failed to fetch films');
+  return res.json();
+}
+```
+
+The `fetcher` receives `(params, abortController)` and returns a value or `Promise`. The `abortController` is automatically wired up so in-flight fetches are aborted when parameters change or all subscribers unmount.
+
+## Reactive Parameters
+
+Query stores become especially powerful when their parameters are reactive. The `params` config option accepts a map of parameter keys, where each value can be:
+
+**1. A static value** — used as-is, never changes:
+
+```ts
+params: {
+  region: 'us-east-1',
+}
+```
+
+**2. A reactive function** — re-evaluated when dependencies change, using the same `$` accessor as derived stores:
+
+```ts
+import { createQueryStore } from '@storesjs/stores';
+import { authStore } from './authStore';
+
+export const accountStore = createQueryStore<Account, { userId: string }>({
+  fetcher: fetchAccount,
+  params: {
+    userId: $ => $(authStore).userId,
+  },
+  staleTime: time.minutes(10),
+});
+```
+
+When `authStore.userId` changes, `accountStore` automatically refetches for the new user.
+
+**3. A `queryParam` wrapper** — for cases where the fetcher needs a full value but the cache key should be derived differently:
+
+```ts
+import { queryParam } from '@storesjs/stores';
+
+params: {
+  // The fetcher receives the full `user` object, but the query key is keyed only by `user.id`
+  user: queryParam(
+    $ => $(userStore).user,
+    { key: user => user?.id }
+  ),
+}
+```
+
+## Query Store State Interface
+
+Every query store's state includes the following fields and methods:
+
+| Member | Description |
+|---|---|
+| `getData(paramsOrKey?)` | Returns cached data for the current (or specified) params, or `null` |
+| `getStatus(key?)` | Returns the full `QueryStatusInfo` object, or a single boolean by key |
+| `fetch(params?, options?)` | Imperatively trigger a fetch; returns `Promise<TData \| null>` |
+| `reset(resetStoreState?)` | Tears down param subscriptions/timers; optionally resets state |
+| `getCacheEntry(paramsOrKey?)` | Low-level access to the raw cache entry |
+| `isStale(override?)` | Whether current data has exceeded `staleTime` |
+| `isDataExpired(override?)` | Whether current data has exceeded `cacheTime` |
+| `status` | Current `QueryStatus` string: `'idle' \| 'loading' \| 'success' \| 'error'` |
+| `error` | The most recent fetch error, or `null` |
+| `queryKey` | The deterministically generated key for current params |
+| `queryCache` | Raw cache map keyed by query key |
+| `lastFetchedAt` | Timestamp of last successful fetch, or `null` |
+| `enabled` | Whether the store is actively fetching |
+
+### Query Status
+
+The `status` field uses values from the `QueryStatuses` constant:
+
+```ts
+import { QueryStatuses } from '@storesjs/stores';
+
+QueryStatuses.Idle    // 'idle'
+QueryStatuses.Loading // 'loading'
+QueryStatuses.Success // 'success'
+QueryStatuses.Error   // 'error'
+```
+
+### `QueryStatusInfo`
+
+`getStatus()` returns a `QueryStatusInfo` object with pre-computed boolean flags:
+
+```ts
+const { isInitialLoad, isLoading, isSuccess, isError, isIdle } =
+  accountStore.getState().getStatus();
+
+// Or request a single flag to avoid building the full object:
+const isInitialLoad = accountStore.getState().getStatus('isInitialLoad');
+```
+
+| Flag | Description |
+|---|---|
+| `isIdle` | No request in progress, no data, no error |
+| `isLoading` | A fetch is currently in progress |
+| `isSuccess` | Most recent fetch succeeded |
+| `isError` | Most recent fetch encountered an error |
+| `isInitialLoad` | `isLoading` is true and no data has been fetched yet |
+
+## Using in React and Outside React
+
+<Tabs>
+  <Tab title="React">
+    In the React build, query stores are callable hooks. Select the piece of state you need — the component re-renders only when that value changes:
+
+    ```tsx
+    function FilmList() {
+      const films = useFilmsStore(s => s.getData());
+      const { isInitialLoad, isError } = useFilmsStore(s => s.getStatus());
+
+      if (isInitialLoad) return <Spinner />;
+      if (isError) return <ErrorMessage />;
+
+      return (
+        <FlatList
+          data={films}
+          keyExtractor={film => film.id}
+          renderItem={({ item }) => <FilmCard film={item} />}
+        />
+      );
+    }
+    ```
+
+    The store fetches automatically when the component mounts (if data is stale or absent) and cleans up when it unmounts.
+  </Tab>
+  <Tab title="Vanilla / Outside React">
+    Use the standard store API for imperative access outside components:
+
+    ```ts
+    // Trigger a fetch manually
+    await accountStore.getState().fetch();
+
+    // Force a fresh fetch regardless of staleness
+    await accountStore.getState().fetch(undefined, { force: true });
+
+    // Read data synchronously
+    const data = accountStore.getState().getData();
+
+    // Subscribe to status changes
+    const unsubscribe = accountStore.subscribe(
+      s => s.status,
+      (status) => console.log('Status changed:', status)
+    );
+    ```
+  </Tab>
+</Tabs>
+
+## Key Config Options
+
+```ts
+createQueryStore<Film[]>({
+  fetcher: fetchFilms,
+
+  // How long data is considered fresh (default: time.minutes(2))
+  staleTime: time.hours(1),
+
+  // How long data lives in the cache before becoming eligible for pruning
+  // (default: time.days(7))
+  cacheTime: time.days(30),
+
+  // Maximum number of retry attempts after a fetch error (default: 5)
+  maxRetries: 3,
+
+  // Custom retry delay — receives retryCount and the error
+  retryDelay: (retryCount) => Math.min(1000 * 2 ** retryCount, 30_000),
+
+  // Disable the store until a condition is met
+  enabled: $ => $(authStore).isAuthenticated,
+
+  // Return previous data while refetching for new params
+  keepPreviousData: true,
+
+  // Debounce param-change-triggered fetches
+  paramChangeThrottle: 300,
+
+  // Disable automatic background refetching when data becomes stale
+  disableAutoRefetching: false,
+
+  // Transform raw fetcher data into the shape your app consumes
+  transform: (rawData, params) => rawData.map(normalizeFilm),
+
+  // Called after every successful fetch
+  onFetched: ({ data, params, set }) => {
+    console.log('Fetched', data.length, 'films');
+  },
+
+  // Called after every fetch error
+  onError: (error, retryCount) => {
+    console.error('Fetch failed (attempt', retryCount, '):', error.message);
+  },
+});
+```
+
+<Note>
+  Use the `time` utility from `@storesjs/stores` to define `staleTime`, `cacheTime`, and other duration values in human-readable units: `time.minutes(2)`, `time.hours(1)`, `time.days(7)`. All `time` methods return a plain millisecond number, so they are fully compatible with any numeric duration field.
+</Note>
+
+## `FetchOptions`
+
+When calling `fetch()` imperatively, `FetchOptions` gives you fine-grained control:
+
+```ts
+await myStore.getState().fetch(params, {
+  // Force a fresh fetch even if data is not stale
+  force: true,
+
+  // Override staleTime for this fetch only
+  staleTime: time.seconds(0),
+
+  // Override cacheTime for this fetch only
+  cacheTime: time.hours(1),
+
+  // Run the fetch without updating the store (useful for pre-fetching)
+  skipStoreUpdates: true,
+
+  // Throw on failure instead of storing the error
+  throwOnError: true,
+
+  // Control whether the store's queryKey updates to reflect the fetched params
+  updateQueryKey: false,
+});
+```
+
+## Custom State with a State Creator
+
+Pass a state creator as the second argument to extend the query store with your own local state:
+
+```ts
+type CustomState = {
+  selectedId: string | null;
+  setSelectedId: (id: string | null) => void;
+};
+
+export const useFilmsStore = createQueryStore<Film[], Record<string, never>, CustomState>(
+  { fetcher: fetchFilms, staleTime: time.hours(1) },
+  set => ({
+    selectedId: null,
+    setSelectedId: id => set({ selectedId: id }),
+  }),
+  { storageKey: 'films' }
+);
+```
+
+The custom state is merged into the store's state alongside all query fields (`getData`, `status`, `fetch`, etc.).
+
+## Automatic Fetch Deduplication
+
+If multiple components subscribe to the same query store simultaneously, only one fetch request is made. Concurrent callers of `fetch()` with matching params receive the same in-flight promise — no duplicate network requests are issued.

@@ -1,0 +1,90 @@
+---
+title: "createStoreActions API Reference"
+sidebarTitle: "createStoreActions"
+description: "createStoreActions extracts the action methods from a store into a stable object, useful for importing actions independently of the store."
+---
+
+`createStoreActions` inspects a store's current state, collects every function-typed property, and returns them as a plain stable object. This lets you import and call store actions without importing the full store hook — and without accidentally triggering React re-renders from module-level code.
+
+## Signatures
+
+```ts
+function createStoreActions<Store>(store: Store): StoreActions<Store>
+
+function createStoreActions<Store, Bundled>(
+  store: Store,
+  bundledMethods: Bundled
+): StoreActions<Store> & Bundled
+```
+
+## Parameters
+
+<ParamField body="store" type="StoreApi<unknown>" required>
+  The store instance whose function-typed state properties will be extracted.
+  Pass the store reference directly (e.g. the value returned by
+  `createBaseStore`).
+</ParamField>
+
+<ParamField body="bundledMethods" type="Bundled extends FunctionRecord">
+  An optional object of additional methods to merge into the returned actions
+  object. The keys of `bundledMethods` must not overlap with any key already
+  present in the store's state — TypeScript enforces this constraint at
+  compile time via the `NoOverlap` utility type.
+</ParamField>
+
+## Return value
+
+<ResponseField name="StoreActions<Store>" type="object">
+  A plain object containing every function-typed key from the store's state
+  type. Formally defined as:
+
+  ```ts
+  type StoreActions<Store extends StoreApi<unknown>> =
+    Pick<InferStoreState<Store>, FunctionKeys<InferStoreState<Store>>>;
+  ```
+
+  When `bundledMethods` is provided the return type is `StoreActions<Store> & Bundled`.
+</ResponseField>
+
+## Usage pattern
+
+Export the store and its actions from the same file. Components subscribe through the store; imperative code (event handlers, utilities, other stores) calls actions directly.
+
+```ts
+import { createBaseStore, createStoreActions } from '@storesjs/stores';
+
+export const settingsStore = createBaseStore(set => ({
+  currency: 'USD',
+  setCurrency: (currency: string) => set({ currency }),
+  resetCurrency: () => set({ currency: 'USD' }),
+}));
+
+export const settingsActions = createStoreActions(settingsStore);
+// settingsActions.setCurrency('EUR');
+// settingsActions.resetCurrency();
+```
+
+### Adding bundled methods
+
+Use `bundledMethods` to co-locate related helpers that are not part of the store state itself:
+
+```ts
+export const cartActions = createStoreActions(cartStore, {
+  clearAndNavigate: () => {
+    cartStore.getState().clearCart();
+    router.push('/shop');
+  },
+});
+```
+
+## Virtual store behaviour
+
+For virtual stores (created with `createVirtualStore`), each action returned by `createStoreActions` is a **delegating wrapper** — every call is forwarded to the method on the current underlying store at call time. This ensures that when the virtual store's target changes, action calls are automatically routed to the new target.
+
+<Tip>
+  Co-locating the store and its actions in a single file (`settingsStore.ts`) is
+  a recommended pattern. Components import `settingsStore` for reactive
+  subscriptions; non-React modules import `settingsActions` for fire-and-forget
+  writes. This separation keeps component files free of action boilerplate and
+  makes the store's public API immediately visible in one place.
+</Tip>

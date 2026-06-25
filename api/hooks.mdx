@@ -1,0 +1,177 @@
+---
+title: "React Hooks: useListen and useStableValue"
+sidebarTitle: "Hooks"
+description: "useListen subscribes to a store slice without triggering re-renders. useStableValue initializes a value once per component instance."
+---
+
+These hooks are part of the React build of `@storesjs/stores` and are **not available in the vanilla (framework-agnostic) build**. Import them from `@storesjs/stores` in any React or React Native project.
+
+---
+
+## `useListen`
+
+`useListen` subscribes to a slice of a store and runs a callback whenever that slice changes — **without causing the component to re-render**. It is the right tool when you need to react to state changes imperatively: forwarding values to Reanimated shared values, triggering side effects, or deciding yourself whether and when a render should occur.
+
+The hook attaches the subscription automatically on mount and removes it on unmount. Use the returned `ListenHandle` only when you need to pause or resume the listener manually.
+
+### Signature
+
+```ts
+function useListen<Store, Selected>(
+  store: Store,
+  selector: (state: S) => Selected,
+  react: (current: Selected, previous: Selected, unsubscribe: () => void) => void,
+  optionsOrEqualityFn?: UseListenOptions<Selected> | EqualityFn<Selected>
+): RefObject<Readonly<ListenHandle>>
+```
+
+### Parameters
+
+<ParamField body="store" type="BaseStore<S>" required>
+  The store to subscribe to. Should be a stable reference — the hook re-attaches
+  when this value changes.
+</ParamField>
+
+<ParamField body="selector" type="(state: S) => Selected" required>
+  Selects the slice of store state to observe. The `react` callback is only
+  invoked when this selected value changes according to `equalityFn`.
+</ParamField>
+
+<ParamField body="react" type="(current: Selected, previous: Selected, unsubscribe: () => void) => void" required>
+  Callback fired whenever the selected slice changes. Receives the current
+  value, the previous value, and a convenience `unsubscribe` function that
+  permanently detaches this listener.
+</ParamField>
+
+<ParamField body="optionsOrEqualityFn" type="UseListenOptions<Selected> | EqualityFn<Selected>">
+  Either a `UseListenOptions` config object or a shorthand equality function.
+  When omitted, defaults apply.
+
+  <Expandable title="UseListenOptions fields">
+    <ParamField body="enabled" type="boolean" default="true">
+      When `false`, the listener is not attached and any existing subscription
+      is removed. Toggling `enabled` back to `true` re-attaches the listener.
+      This is the **only** option that is reactive — changes take effect
+      immediately without requiring a resubscription.
+    </ParamField>
+
+    <ParamField body="equalityFn" type="EqualityFn<Selected>" default="Object.is">
+      Determines whether the selected value has changed. The `react` callback
+      is skipped when `equalityFn(previous, current)` returns `true`. Use
+      `shallowEqual` or `deepEqual` when your selector returns a new object
+      reference on every call.
+    </ParamField>
+
+    <ParamField body="fireImmediately" type="boolean" default="false">
+      When `true`, `react` is called once immediately on mount, regardless of
+      whether the selected value has changed since the last render.
+    </ParamField>
+
+    <ParamField body="debugMode" type="boolean" default="false">
+      When `true`, the hook logs `[📡 useListen 📡] Attaching listener` and
+      `[🗑️ useListen 🗑️] Detaching listener` messages to the console each
+      time the subscription lifecycle fires.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return value
+
+<ResponseField name="RefObject<Readonly<ListenHandle>>" type="RefObject">
+  A React ref whose `.current` value is a `ListenHandle`:
+
+  <Expandable title="ListenHandle properties">
+    <ResponseField name="isActive" type="boolean">
+      `true` while the listener is attached and receiving updates.
+    </ResponseField>
+
+    <ResponseField name="resubscribe" type="(options?: ResubscribeOptions) => void">
+      Re-attaches the listener. Has no effect if the listener is already active
+      unless `forceResubscribe: true` is passed.
+
+      <Expandable title="ResubscribeOptions">
+        <ParamField body="fireImmediately" type="boolean" default="false">
+          Whether to fire the `react` callback immediately upon resubscription.
+        </ParamField>
+        <ParamField body="forceResubscribe" type="boolean" default="false">
+          When `true`, the existing subscription is torn down and rebuilt even
+          if the listener is currently active.
+        </ParamField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="unsubscribe" type="() => void">
+      Detaches the listener. Safe to call multiple times. The hook will
+      **not** re-attach after a manual `unsubscribe` — use `resubscribe()` to
+      resume, or toggle `enabled` if you want reactive control.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+The following pattern is taken directly from the source docblock. It forwards candlestick data to a Reanimated chart manager without ever re-rendering the component:
+
+```ts
+useListen(
+  useCandlestickStore,
+  state => state.getData(),
+  (candles, previous, unsubscribe) => {
+    if (candles?.unsupported) return unsubscribe();
+    updateTokenPrice(token, getPriceUpdate(candles, previous));
+    runOnUI(() => chartManager.value?.setCandles(candles))();
+  }
+);
+```
+
+<Tip>
+  Changes to options other than `enabled` are **not reactive**. If you update
+  `equalityFn`, `fireImmediately`, or `debugMode` between renders those new
+  values only take effect the next time the listener resubscribes (e.g. when
+  `store` changes or `enabled` toggles). Keep these values stable or use refs
+  if you need them to update dynamically.
+</Tip>
+
+<Note>
+  The hook manages its own lifecycle — you do not need to call `unsubscribe` in
+  a cleanup function. Only reach for the returned `ListenHandle` when you want
+  to explicitly pause the listener (e.g. while a long-lived component is
+  off-screen) and later resume it with `resubscribe()`.
+</Note>
+
+---
+
+## `useStableValue`
+
+`useStableValue` runs an initializer function exactly once per component instance and returns the same value for the lifetime of that component. It is a safe, idiomatic alternative to `useRef` + manual initialization guards for expensive or stateful values that must not be recreated on re-renders.
+
+### Signature
+
+```ts
+function useStableValue<T>(init: () => T): T
+```
+
+### Parameters
+
+<ParamField body="init" type="() => T" required>
+  A zero-argument factory function. It is called **only on the first render**
+  of a given component instance. Subsequent renders skip the call entirely and
+  return the cached value.
+</ParamField>
+
+### Return value
+
+<ResponseField name="T" type="T">
+  The stable value produced by `init` on the first render.
+</ResponseField>
+
+### Example
+
+```ts
+import { useStableValue } from '@storesjs/stores';
+
+function MyComponent() {
+  const initialState = useStableValue(() => computeExpensiveInitialState());
+  // initialState is identical across every render of this component instance
+}
+```

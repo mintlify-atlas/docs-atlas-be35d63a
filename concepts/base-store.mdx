@@ -1,0 +1,186 @@
+---
+title: "Base Stores: Local Synchronous State"
+sidebarTitle: "Base Store"
+description: "Base stores define local synchronous state with explicit update methods. They are the foundation of every Stores graph."
+---
+
+Base stores are the simplest and most foundational store type in `@storesjs/stores`. They hold synchronous, local state and expose explicit methods for reading and updating that state. Every other store type — derived, query, and virtual — can read from base stores and react to their changes. If you have UI preferences, form inputs, filters, or any piece of state that lives entirely on the client, a base store is the right tool.
+
+## Creating a Base Store
+
+Use `createBaseStore` with a state creator function. The creator receives `set`, `get`, and `store`, and returns the initial state object.
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+
+type Settings = {
+  currency: string;
+  locale: string;
+  setCurrency: (currency: string) => void;
+  setLocale: (locale: string) => void;
+};
+
+export const settingsStore = createBaseStore<Settings>(set => ({
+  currency: 'USD',
+  locale: 'en-US',
+  setCurrency: currency => set({ currency }),
+  setLocale: locale => set({ locale }),
+}));
+```
+
+The state creator arguments behave as follows:
+
+- **`set`** — Updates store state. By default it performs a **partial merge**, so you only need to provide the keys you want to change. Calling `set(state => ({ currency: 'EUR' }))` leaves all other keys intact. Pass `replace: true` as the second argument to perform a **full replacement** instead (see [setState behavior](#setstate-behavior) below).
+- **`get`** — Returns the current state synchronously. Useful inside action methods when you need to read state before computing an update.
+- **`store`** — The raw store object. Rarely needed, but available for advanced use cases like subscribing to state changes inside another action.
+
+Here is a more complete real-world example drawn from the example app's favorites store:
+
+```ts
+import { createBaseStore, time } from '@storesjs/stores';
+
+type FavoritesState = {
+  favorites: Record<string, Film>;
+  addFavorite: (film: Film) => void;
+  removeFavorite: (id: string) => void;
+};
+
+export const useFavoritesStore = createBaseStore<FavoritesState>(
+  set => ({
+    favorites: {},
+    addFavorite: film =>
+      set(state => ({ favorites: { ...state.favorites, [film.id]: film } })),
+    removeFavorite: id =>
+      set(state => {
+        const { [id]: _, ...rest } = state.favorites;
+        return { favorites: rest };
+      }),
+  }),
+  { storageKey: 'favorites' }
+);
+```
+
+## Using in React
+
+In the React build, every store is also a callable hook. Pass a selector to subscribe to a specific slice of state:
+
+```tsx
+import { useFavoritesStore } from './favoritesStore';
+
+function FavoriteCount() {
+  const count = useFavoritesStore(s => Object.keys(s.favorites).length);
+  return <Text>{count} favorites</Text>;
+}
+```
+
+The component re-renders only when the selected value changes. You can optionally pass a second argument — a custom equality function — to control when the component re-renders:
+
+```ts
+import { shallowEqual } from '@storesjs/stores';
+
+const favorites = useFavoritesStore(s => s.favorites, shallowEqual);
+```
+
+<Tip>
+  The store object itself (`useFavoritesStore`, `settingsStore`, etc.) is stable across renders — it is created once and never changes. You can safely reference it in callbacks and effects without adding it to dependency arrays.
+</Tip>
+
+## Using Outside React
+
+The same store works perfectly outside of React — in utilities, services, or background logic:
+
+```ts
+// Read state synchronously
+const { currency } = settingsStore.getState();
+
+// Subscribe to a specific slice of state
+const unsubscribe = settingsStore.subscribe(
+  s => s.currency,
+  (currency, prevCurrency) => {
+    console.log('Currency changed from', prevCurrency, 'to', currency);
+  },
+  { fireImmediately: true }
+);
+
+// Clean up the subscription later
+unsubscribe();
+```
+
+The `subscribe` overloads mirror the hook's selector API. `SubscribeOptions` accepts `equalityFn` and `fireImmediately`.
+
+<Note>
+  Every base store exposes a `getInitialState()` method that returns the original state produced by the state creator before any updates have been applied. This is useful for implementing reset actions: `set(store.getInitialState(), true)`.
+</Note>
+
+## `setState` Behavior
+
+`setState` on a base store has two modes:
+
+```ts
+// Partial merge (default) — only updates the provided keys
+settingsStore.setState({ currency: 'GBP' });
+
+// Full replacement — replaces the entire state object
+settingsStore.setState({ currency: 'GBP', locale: 'en-GB', setCurrency, setLocale }, true);
+```
+
+Using `replace: true` requires you to pass the complete state shape, including all action methods.
+
+## Exporting Actions with `createStoreActions`
+
+Action methods in the state object are stable references — they do not change between renders or state updates. You can extract them into a standalone actions object for clean, imperative usage throughout your app:
+
+```ts
+import { createStoreActions } from '@storesjs/stores';
+
+export const settingsActions = createStoreActions(settingsStore);
+
+// Anywhere in your app, no hook required:
+settingsActions.setCurrency('EUR');
+settingsActions.setLocale('fr-FR');
+```
+
+This pattern is especially useful in event handlers, background tasks, or tests where you do not want or need a React context.
+
+From the example app's search store:
+
+```ts
+export const useSearchStore = createBaseStore<SearchState>(set => ({
+  query: '',
+  setQuery: q => set({ query: q }),
+}));
+
+// Stable action reference — safe to import and call anywhere
+export const { setQuery } = useSearchStore.getState();
+```
+
+## Persistence
+
+Base stores support optional persistence out of the box. Provide a `storageKey` in the options object to opt in:
+
+```ts
+export const settingsStore = createBaseStore<Settings>(
+  set => ({ currency: 'USD', locale: 'en-US', setCurrency, setLocale }),
+  {
+    storageKey: 'user-settings',
+    partialize: state => ({ currency: state.currency, locale: state.locale }),
+    version: 1,
+    migrate: (persisted, version) => {
+      if (version < 1) return { ...persisted, locale: 'en-US' };
+      return persisted;
+    },
+  }
+);
+```
+
+Key persistence options at a glance:
+
+| Option | Description |
+|---|---|
+| `storageKey` | Unique key used to read/write from storage |
+| `partialize` | Function returning the subset of state to persist |
+| `version` | Schema version number (default `0`) |
+| `migrate` | Called when a version mismatch is detected |
+| `storage` | Custom storage adapter (sync or async) |
+
+For the full persistence guide including async storage, custom adapters, and hydration callbacks, see [Persistence](/guides/persistence).

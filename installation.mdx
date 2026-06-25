@@ -1,0 +1,183 @@
+---
+title: "Installing @storesjs/stores"
+sidebarTitle: "Installation"
+description: "Install @storesjs/stores via npm, yarn, or pnpm. Configure peer dependencies for React, React Native, and vanilla TypeScript projects."
+---
+
+`@storesjs/stores` is a single package that ships three runtime builds — React web, React Native, and vanilla TypeScript — selected automatically via package conditions. Install it once and import from the same specifier regardless of your target environment.
+
+## Install
+
+<CodeGroup>
+
+```bash npm
+npm install @storesjs/stores
+```
+
+```bash yarn
+yarn add @storesjs/stores
+```
+
+```bash pnpm
+pnpm add @storesjs/stores
+```
+
+</CodeGroup>
+
+<Note>
+  `@storesjs/stores` requires **Node.js ≥20**. Check your local version with `node --version` before installing.
+</Note>
+
+## Peer Dependencies
+
+All peer dependencies are optional — install only the ones your target environment requires:
+
+| Package | Version | When required |
+|---|---|---|
+| `react` | `>=18.0.0` | React web apps |
+| `react-native` | `>=0.69.0` | React Native apps |
+| `react-native-mmkv` | `>=2.0.0` | Persistent storage in React Native |
+
+Install the ones you need alongside the package:
+
+<CodeGroup>
+
+```bash React (npm)
+npm install @storesjs/stores react react-dom
+```
+
+```bash React Native (npm)
+npm install @storesjs/stores react-native react-native-mmkv
+```
+
+```bash Vanilla (npm)
+npm install @storesjs/stores
+```
+
+</CodeGroup>
+
+## Runtime Modes
+
+`@storesjs/stores` exports different builds depending on the active [package condition](https://nodejs.org/api/packages.html#conditional-exports). The correct build is selected automatically in most toolchains.
+
+<Tabs>
+
+<Tab title="React (Web)">
+
+The default build. Import from `@storesjs/stores` in any React web project — no configuration needed:
+
+```ts
+import {
+  createBaseStore,
+  createDerivedStore,
+  createQueryStore,
+  configureStores,
+} from '@storesjs/stores';
+```
+
+Stores are callable as React hooks in this build:
+
+```ts
+// Inside a React component
+const currency = settingsStore(s => s.currency);
+```
+
+Compatible with React ≥18. Works with Vite, Next.js, Create React App, and any bundler that resolves `exports`.
+
+</Tab>
+
+<Tab title="React Native">
+
+The `react-native` package condition selects the native build automatically when you import `@storesjs/stores` in a React Native project (Metro resolves this condition by default):
+
+```ts
+import {
+  createBaseStore,
+  createDerivedStore,
+  createQueryStore,
+} from '@storesjs/stores';
+```
+
+The native build uses **MMKV** (via `react-native-mmkv`) as the default storage backend for persisted stores instead of `localStorage`. Install `react-native-mmkv` as a peer dependency to enable persistence:
+
+```bash
+npm install react-native-mmkv
+```
+
+No import path changes are needed — the `react-native` condition in the `exports` map is resolved automatically by Metro.
+
+</Tab>
+
+<Tab title="Vanilla (No React)">
+
+The `vanilla` build exposes stores as plain store objects with no React dependency. Stores are **not** callable as hooks in this build — use `.getState()` and `.subscribe()` instead.
+
+Enable the `vanilla` condition in your TypeScript config:
+
+```json
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "customConditions": ["vanilla"]
+  }
+}
+```
+
+Then import as usual:
+
+```ts
+import {
+  createBaseStore,
+  createDerivedStore,
+  createQueryStore,
+} from '@storesjs/stores';
+
+const count = counterStore.getState().count;
+
+const unsubscribe = counterStore.subscribe(
+  s => s.count,
+  count => console.log('Count:', count)
+);
+```
+
+Make sure your bundler also forwards the `vanilla` condition. For example, in Vite:
+
+```ts
+// vite.config.ts
+export default {
+  resolve: {
+    conditions: ['vanilla'],
+  },
+};
+```
+
+</Tab>
+
+</Tabs>
+
+## Chrome Extension Plugin
+
+A separate entry point ships a `ChromeStorageAdapter` for persisting store state in Chrome extension storage. Import it from the `/chrome` subpath:
+
+```ts
+import { ChromeStorageAdapter } from '@storesjs/stores/chrome';
+```
+
+Pass the adapter to `configureStores()` as your storage backend before creating any stores:
+
+```ts
+import { configureStores } from '@storesjs/stores';
+import { ChromeStorageAdapter } from '@storesjs/stores/chrome';
+
+configureStores({
+  storage: new ChromeStorageAdapter(),
+  storageKeyPrefix: 'myextension:',
+});
+```
+
+The `/chrome` entry resolves its own `types`, `import`, and `require` conditions independently of the main entry point — it is always the web build, regardless of other active conditions.
+
+<Note>
+  The `@types/chrome` types package is required in your project for the `ChromeStorageAdapter` import to type-check correctly. Add it as a dev dependency: `npm install -D @types/chrome`.
+</Note>

@@ -1,0 +1,254 @@
+---
+title: "createVirtualStore API Reference"
+sidebarTitle: "createVirtualStore"
+description: "createVirtualStore returns a stable store interface that rebinds subscriptions automatically when the underlying store instance changes."
+---
+
+`createVirtualStore` returns a stable store handle whose backing store instance can change over time. You provide a derive function that uses the `$` accessor to read from other stores and returns a store instance. Whenever the `$` dependencies change, the derive function re-runs, a new backing store is created, and all existing subscriptions rebind to it transparently — without consumers needing to know the underlying store changed. This makes `createVirtualStore` the right tool when you need to swap an entire store (not just recompute a value) based on reactive state.
+
+## Signatures
+
+```ts
+function createVirtualStore<Store extends BaseStore<InferStoreState<Store>>>(
+  createStore: ($: DeriveGetter) => Store,
+  options?: VirtualStoreOptions
+): VirtualStore<Store>
+
+function createVirtualStore<Store extends BaseStore<InferStoreState<Store>>, Overrides extends MethodOverrides<Store>>(
+  createStore: ($: DeriveGetter) => Store,
+  overrides: (getStore: () => Store) => Overrides,
+  options?: VirtualStoreOptions
+): VirtualStore<Store> & Overrides
+```
+
+`VirtualStore<Store>` is defined as:
+
+```ts
+type VirtualStore<Store extends BaseStore<unknown>> = OptionallyPersistedStore<
+  InferStoreState<Store>,
+  InferPersistedState<Store>,
+  InferSetStateReturn<Store>
+>;
+```
+
+The return type mirrors the underlying store's full interface — including `persist?` when the backing store uses persistence — so consumers interact with the virtual store exactly as they would with the concrete store.
+
+---
+
+## Parameters
+
+<ParamField path="createStore" type="($: DeriveGetter) => Store" required>
+  A derive function that reads reactive dependencies via `$` and returns a store instance. This function is re-evaluated each time a tracked dependency changes, and the returned store becomes the new backing instance. The `$` accessor behaves identically to the one in `createDerivedStore`.
+
+  ```ts
+  // createStore is re-run whenever `accountAddress` changes
+  const useUserAssetsStore = createVirtualStore($ => {
+    const address = $(walletsStore).accountAddress;
+    return createUserAssetsStore(address);
+  });
+  ```
+
+  Only read state that should actually trigger a new store creation. Accessing deeply nested values through `$` that change frequently may cause unnecessary store reinitializations.
+</ParamField>
+
+<ParamField path="overrides" type="(getStore: () => Store) => Partial<Pick<Store, 'getState' | 'setState'>>">
+  An optional factory that receives a stable `getStore` accessor and returns method overrides to attach to the virtual store's public interface. Useful when you need to customize the public `getState` or `setState` signatures — for example, to accept an `id` argument that routes to a specific cache entry.
+
+  ```ts
+  const useAssetsStore = createVirtualStore(
+    $ => {
+      const address = $(walletsStore).accountAddress;
+      return createUserAssetsStore(address);
+    },
+    getStore => ({
+      getState: (id?: string) => {
+        const state = getStore().getState();
+        return id ? state.assetsById[id] : state;
+      },
+    })
+  );
+  ```
+</ParamField>
+
+<ParamField path="options" type="VirtualStoreOptions">
+  Optional configuration object. See [`VirtualStoreOptions`](#virtualstoroptions) below.
+</ParamField>
+
+---
+
+### `VirtualStoreOptions`
+
+```ts
+type VirtualStoreOptions = {
+  lockDependencies?: boolean;
+  debugMode?: boolean;
+};
+```
+
+<ParamField path="lockDependencies" type="boolean" default="true">
+  Locks the dependency graph after the first evaluation of `createStore`. Subscriptions to upstream stores are established once and reused rather than being rebuilt each time the backing store is swapped.
+
+  The default is `true` — the opposite of `createDerivedStore`'s default — because virtual store dependency graphs are almost always static: you read a single identifying value (e.g. a wallet address or user ID) and create a store from it.
+
+  Set to `false` only if your `createStore` function reads dependencies conditionally across different evaluations.
+</ParamField>
+
+<ParamField path="debugMode" type="boolean" default="false">
+  Enables console logging of dependency tracking and store-swapping events.
+</ParamField>
+
+---
+
+### `DeriveGetter`
+
+The `$` accessor inside `createStore` is the same `DeriveGetter` type used in `createDerivedStore`. It supports both proxy-based and selector-based access patterns:
+
+```ts
+type DeriveGetter = {
+  // Proxy-based: dependencies tracked by property access
+  <Store extends StoreApi<InferStoreState<Store>>>(
+    store: Store
+  ): InferStoreState<Store>;
+
+  // Selector-based: depends on explicit projection
+  <Store extends StoreApi<InferStoreState<Store>>, Selected>(
+    store: Store,
+    selector: (state: InferStoreState<Store>) => Selected,
+    equalityFn?: (a: Selected, b: Selected) => boolean
+  ): Selected;
+};
+```
+
+---
+
+## Return Value
+
+The returned virtual store exposes the same interface as the backing store type, including:
+
+<ResponseField name="getState" type="() => InferStoreState<Store>">
+  Returns the current state of the active backing store. Delegates directly to the backing store's `getState`.
+</ResponseField>
+
+<ResponseField name="setState" type="SetStateOverloads<InferStoreState<Store>, InferSetStateReturn<Store>>">
+  Updates state on the active backing store. If the backing store uses async storage, returns `Promise<void>`; otherwise returns `void`.
+</ResponseField>
+
+<ResponseField name="subscribe" type="SubscribeOverloads<InferStoreState<Store>>">
+  Subscribes to changes in the active backing store. When the backing store is swapped, the subscription automatically rebinds to the new instance.
+</ResponseField>
+
+<ResponseField name="getInitialState" type="() => InferStoreState<Store>">
+  Returns the initial state of the currently active backing store.
+</ResponseField>
+
+<ResponseField name="persist" type="PersistMethods<...> | undefined">
+  Present when the backing store is persisted. Exposes `hasHydrated`, `rehydrate`, `clearStorage`, `onHydrate`, `onFinishHydration`, `getOptions`, `setOptions`, and (for async storage) `hydrationPromise`. The `persist` field is always optional on the virtual store because the backing store's persistence configuration can vary at runtime.
+</ResponseField>
+
+### React Hook Usage
+
+In the React build, the virtual store is also callable as a hook:
+
+```ts
+const state = useUserAssetsStore();
+const balance = useUserAssetsStore(s => s.balance);
+```
+
+---
+
+## When to Use vs. `createDerivedStore`
+
+| | `createDerivedStore` | `createVirtualStore` |
+|---|---|---|
+| **Output** | A computed value derived from source stores | A full store instance that changes over time |
+| **Reactive input** | One or more state slices | An identifier or key that determines which store to use |
+| **Mutation** | Read-only | Writes delegate to the active backing store |
+| **Persistence** | Not applicable | Inherited from backing store |
+| **Typical use case** | Format data, aggregate values, filter lists | Per-user / per-account / per-address store instances |
+
+Use `createDerivedStore` when you want to compute a value. Use `createVirtualStore` when you want to swap the entire store backing a component tree.
+
+---
+
+<Warning>
+  `lockDependencies` defaults to `true` for virtual stores. This means all `$` calls in `createStore` must be unconditional and at the top level. If your dependency graph is dynamic — if different dependencies are read on different evaluations — set `lockDependencies: false` to allow the graph to be rebuilt on each swap.
+</Warning>
+
+---
+
+## Example
+
+```ts
+import { createBaseStore, createVirtualStore } from '@storesjs/stores';
+
+type WalletsState = {
+  accountAddress: string | null;
+  setAccountAddress: (address: string) => void;
+};
+
+export const walletsStore = createBaseStore<WalletsState>(set => ({
+  accountAddress: null,
+  setAccountAddress: address => set({ accountAddress: address }),
+}));
+
+type UserAssetsState = {
+  assets: Asset[];
+  totalValue: number;
+  fetchAssets: () => Promise<void>;
+};
+
+function createUserAssetsStore(address: string | null) {
+  return createBaseStore<UserAssetsState>(set => ({
+    assets: [],
+    totalValue: 0,
+    fetchAssets: async () => {
+      if (!address) return;
+      const assets = await fetchUserAssets(address);
+      const totalValue = assets.reduce((sum, a) => sum + a.value, 0);
+      set({ assets, totalValue });
+    },
+  }));
+}
+
+// When `accountAddress` changes, a new backing store is created and
+// all existing subscriptions rebind to it automatically.
+export const useUserAssetsStore = createVirtualStore($ => {
+  const address = $(walletsStore).accountAddress;
+  return createUserAssetsStore(address);
+});
+```
+
+```tsx
+function AssetList() {
+  const assets = useUserAssetsStore(s => s.assets);
+  return (
+    <FlatList
+      data={assets}
+      renderItem={({ item }) => <AssetRow asset={item} />}
+    />
+  );
+}
+```
+
+### With Method Overrides
+
+```ts
+const useAssetsStore = createVirtualStore(
+  $ => {
+    const address = $(walletsStore).accountAddress;
+    return createUserAssetsStore(address);
+  },
+  getStore => ({
+    getState: (assetId?: string) => {
+      const state = getStore().getState();
+      if (assetId) {
+        return state.assets.find(a => a.id === assetId) ?? null;
+      }
+      return state;
+    },
+  })
+);
+
+// usage
+const eth = useAssetsStore.getState('eth');
+```

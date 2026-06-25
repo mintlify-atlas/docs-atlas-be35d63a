@@ -1,0 +1,189 @@
+---
+title: "Persisting Store State Across Sessions"
+sidebarTitle: "Persistence"
+description: "Configure base and query stores to persist state to localStorage, MMKV, or a custom async storage adapter. Covers partialize, migration, and hydration."
+---
+
+Store state is ephemeral by default — it resets every time the page reloads or the app restarts. Adding persistence lets a store rehydrate from storage on startup, so users return to the same state they left behind. `@storesjs/stores` makes this a single option: pass a `storageKey` to `createBaseStore` or `createQueryStore` and the framework handles serialization, hydration, and write-through automatically.
+
+## Enabling Persistence
+
+Pass `storageKey` as part of the options object to any base or query store. The key is scoped with the global prefix (default `'stores:'`), so the full storage key for the example below is `stores:settings`.
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+
+type Settings = {
+  currency: string;
+  setCurrency: (currency: string) => void;
+};
+
+export const settingsStore = createBaseStore<Settings>(
+  set => ({
+    currency: 'USD',
+    setCurrency: currency => set({ currency }),
+  }),
+  {
+    storageKey: 'settings',
+    partialize: state => ({ currency: state.currency }),
+  }
+);
+```
+
+Only the fields returned by `partialize` are written to storage. Everything else — including action methods — stays in memory.
+
+## PersistConfig Fields
+
+Every persistence option is part of the `PersistConfig` type. All fields except `storageKey` are optional.
+
+| Field | Type | Description |
+|---|---|---|
+| `storageKey` | `string` | **Required.** Unique key for this store. Scoped by `storageKeyPrefix`. |
+| `partialize` | `(state: S) => PersistedState` | Selects which state to persist. Defaults to the full state object. |
+| `version` | `number` | Schema version number. Defaults to `0`. Bump when your persisted shape changes. |
+| `migrate` | `(persistedState, version) => PersistedState \| Promise<PersistedState>` | Transforms persisted state from an older version to the current schema. |
+| `merge` | `(persistedState, currentState) => S` | Custom merge strategy applied during hydration. Defaults to a shallow merge. |
+| `onRehydrateStorage` | `(state: S) => ((state?, error?) => void) \| void` | Lifecycle hook called before hydration begins. The returned function is called after hydration completes or when an error occurs. |
+| `serializer` | `(storageValue) => string` | Overrides the default JSON serializer for writing to storage. |
+| `deserializer` | `(serializedState) => StorageValue<PersistedState>` | Overrides the default JSON deserializer for reading from storage. |
+| `storage` | `SyncStorageInterface \| AsyncStorageInterface` | Custom storage adapter. Defaults to `localStorage` on web and MMKV on React Native. |
+| `persistThrottleMs` | `number` | Throttle interval (ms) for sync storage writes. Not available for async storage. |
+
+### Migration Example
+
+Bump `version` when you change the persisted shape, and provide `migrate` to transform stale data:
+
+```ts
+export const settingsStore = createBaseStore<Settings>(
+  set => ({
+    currency: 'USD',
+    locale: 'en-US',
+    setCurrency: currency => set({ currency }),
+  }),
+  {
+    storageKey: 'settings',
+    version: 2,
+    partialize: state => ({ currency: state.currency, locale: state.locale }),
+    migrate: (persisted, fromVersion) => {
+      if (fromVersion < 2) {
+        // locale was added in version 2
+        return { ...persisted, locale: 'en-US' };
+      }
+      return persisted;
+    },
+  }
+);
+```
+
+## The `persist` Object
+
+When persistence is configured, the store exposes a `persist` property with methods for inspecting and controlling the hydration lifecycle:
+
+```ts
+// Check whether the store has finished loading from storage
+settingsStore.persist.hasHydrated();
+
+// Manually trigger a re-read from storage
+settingsStore.persist.rehydrate();
+
+// Remove the store's entry from storage
+settingsStore.persist.clearStorage();
+
+// Subscribe to the moment hydration begins
+const unsubscribe = settingsStore.persist.onHydrate(state => {
+  console.log('hydration started', state);
+});
+
+// Subscribe to the moment hydration finishes
+settingsStore.persist.onFinishHydration(state => {
+  console.log('hydration complete', state);
+});
+
+// Read or update the active persistence options at runtime
+const currentOptions = settingsStore.persist.getOptions();
+settingsStore.persist.setOptions({ version: 3 });
+```
+
+For stores backed by async storage, `persist.hydrationPromise()` returns a `Promise<void>` that resolves once hydration finishes:
+
+```ts
+// Only available when the store uses an AsyncStorageInterface
+await settingsStore.persist.hydrationPromise();
+```
+
+## Global Default Storage
+
+Set a storage adapter once for all stores using `configureStores`. By default the framework uses `localStorage` in browsers and MMKV in React Native environments.
+
+```ts
+import { configureStores } from '@storesjs/stores';
+import { myCustomAdapter } from './storage';
+
+configureStores({
+  storage: myCustomAdapter,
+});
+```
+
+### Storage Key Prefix
+
+All storage keys are automatically prefixed. The default prefix is `'stores:'`. Change it globally with `configureStores`:
+
+```ts
+configureStores({
+  storageKeyPrefix: 'myapp:',
+});
+```
+
+A store created with `storageKey: 'settings'` will then write to `myapp:settings`.
+
+## Custom Storage Interface
+
+Provide your own adapter by implementing `SyncStorageInterface` or `AsyncStorageInterface`.
+
+### Synchronous (`SyncStorageInterface`)
+
+```ts
+import type { SyncStorageInterface } from '@storesjs/stores';
+
+const memoryStorage: SyncStorageInterface<string> = {
+  async: false,
+  clearAll: () => { storage.clear(); },
+  contains: key => storage.has(key),
+  delete: key => { storage.delete(key); },
+  get: key => storage.get(key),
+  getAllKeys: () => Array.from(storage.keys()),
+  set: (key, value) => { storage.set(key, value); },
+};
+```
+
+### Asynchronous (`AsyncStorageInterface`)
+
+When `async: true` is set on the adapter, the framework treats the store as async. `store.setState()` returns `Promise<void>`, and `persist.hydrationPromise()` becomes available.
+
+```ts
+import type { AsyncStorageInterface } from '@storesjs/stores';
+
+const asyncAdapter: AsyncStorageInterface<string> = {
+  async: true,
+  clearAll: async () => { await db.clear(); },
+  contains: async key => db.has(key),
+  delete: async key => { await db.delete(key); },
+  get: async key => db.get(key),
+  getAllKeys: async () => db.keys(),
+  set: async (key, value) => { await db.set(key, value); },
+};
+```
+
+Pass the adapter per-store via `storage` in the options, or globally via `configureStores({ storage: asyncAdapter })`.
+
+<Tip>
+Use `partialize` to exclude action functions and derived values from the persisted payload. Only serialize primitive state that meaningfully differs across sessions — this reduces storage size and avoids accidentally persisting stale computed values.
+</Tip>
+
+<Note>
+Internally, `@storesjs/stores` uses `createHydrationGate` middleware to queue `setState` calls that arrive before rehydration completes. You do not need to gate renders manually; the store flushes all queued updates atomically as soon as storage is read. Gate your UI explicitly only if you need to delay rendering until the store is hydrated — for example by checking `persist.hasHydrated()` or awaiting `persist.hydrationPromise()`.
+</Note>
+
+<Warning>
+`configureStores` must be called **before** any store is created. The framework locks configuration on the first `createBaseStore`, `createQueryStore`, or `createDerivedStore` call. Calling `configureStores` after that point throws an error in development and is silently ignored in production.
+</Warning>

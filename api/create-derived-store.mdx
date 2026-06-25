@@ -1,0 +1,234 @@
+---
+title: "createDerivedStore API Reference"
+sidebarTitle: "createDerivedStore"
+description: "createDerivedStore creates a read-only computed store that tracks dependencies via the $ accessor and re-derives when inputs change."
+---
+
+`createDerivedStore` produces a read-only store whose value is computed from one or more source stores. Dependency tracking is automatic: a special `$` accessor records which stores (and which slices of their state) the derivation reads, then re-runs the derive function whenever any tracked value changes. Derived stores are lazy — nothing executes until the first subscriber attaches — and they self-clean when all subscribers leave, unless `keepAlive` is set. In the React build the returned store is also callable as a hook.
+
+## Signature
+
+```ts
+function createDerivedStore<Derived>(
+  deriveFunction: ($: DeriveGetter) => Derived,
+  optionsOrEqualityFn?: DeriveOptions<Derived>
+): DerivedStore<Derived>
+```
+
+---
+
+## Parameters
+
+<ParamField path="deriveFunction" type="($: DeriveGetter) => Derived" required>
+  A pure function that reads from other stores via `$` and returns the derived value. It is re-evaluated whenever a tracked dependency changes. The function should be side-effect free; use `onFetched` or store actions for side effects.
+</ParamField>
+
+<ParamField path="optionsOrEqualityFn" type="DeriveOptions<Derived>" default="Object.is">
+  Either an equality function or a configuration object. When a function is passed it is used as `equalityFn`. See [`DeriveOptions`](#deriveoptions) below.
+</ParamField>
+
+---
+
+### `DeriveGetter`
+
+The `$` accessor passed into `deriveFunction` has two call signatures.
+
+```ts
+type DeriveGetter = {
+  // Full-state proxy: accesses are auto-tracked at the property level
+  <Store extends StoreApi<InferStoreState<Store>>>(
+    store: Store
+  ): InferStoreState<Store>;
+
+  // Explicit selector: depends on the value returned by `selector`
+  <Store extends StoreApi<InferStoreState<Store>>, Selected>(
+    store: Store,
+    selector: (state: InferStoreState<Store>) => Selected,
+    equalityFn?: (a: Selected, b: Selected) => boolean
+  ): Selected;
+};
+```
+
+**Proxy-based usage** — call `$(store)` and read properties from the result. The framework automatically builds selectors from the property accesses it observes the first time the derive function runs:
+
+```ts
+const derived = createDerivedStore($ => {
+  const { user } = $(userStore);              // tracks `user`
+  const theme = $(settingsStore).appearance.theme; // tracks `appearance.theme`
+  return { user, theme };
+});
+```
+
+**Selector-based usage** — call `$(store, selector, equalityFn?)` to depend on an explicit projection:
+
+```ts
+const derived = createDerivedStore($ => {
+  const userId = $(userStore, s => s.user?.id);
+  const isAdmin = $(userStore, s => s.user?.roles.includes('admin'), Object.is);
+  return { userId, isAdmin };
+});
+```
+
+---
+
+### `DeriveOptions`
+
+`DeriveOptions<Derived>` can be passed as either a plain equality function or a configuration object.
+
+```ts
+type DeriveOptions<DerivedState> =
+  | EqualityFn<DerivedState>
+  | {
+      equalityFn?: EqualityFn<DerivedState>;
+      debounce?: number | DebounceOptions;
+      keepAlive?: boolean;
+      lockDependencies?: boolean;
+      debugMode?: boolean | 'verbose';
+    };
+```
+
+<ParamField path="equalityFn" type="(a: Derived, b: Derived) => boolean" default="Object.is">
+  Determines whether the derived value has changed after re-computation. When the function returns `true` the store does not notify subscribers. Pass `shallowEqual` when the derive function returns a new object each time but with the same scalar fields.
+</ParamField>
+
+<ParamField path="debounce" type="number | DebounceOptions" default="0">
+  Delays re-derivation after a dependency change. Accepts a number of milliseconds or a full debounce configuration object:
+
+  ```ts
+  type DebounceOptions = {
+    delay: number;
+    leading?: boolean;
+    trailing?: boolean;
+    maxWait?: number;
+  };
+  ```
+
+  When a debounced store is destroyed before the delay fires, pending updates are discarded. Call `store.flushUpdates()` to force a synchronous re-derive.
+</ParamField>
+
+<ParamField path="keepAlive" type="boolean" default="false">
+  When `true` the derived store never self-destructs even when it has no subscribers. The store persists in memory and its subscriptions to source stores remain active indefinitely. Useful for permanent caches or stores that are subscribed to intermittently. Call `store.destroy()` to tear it down explicitly.
+</ParamField>
+
+<ParamField path="lockDependencies" type="boolean" default="false">
+  Locks the dependency graph after the first derivation. Subscriptions are established once and reused on subsequent runs rather than being rebuilt, which eliminates subscription churn and the overhead of proxy-tracking on re-derives.
+
+  Enable this when all `$` calls in your derive function are unconditional and at the top level. Conditional dependency tracking will silently miss updates when this option is on.
+</ParamField>
+
+<ParamField path="debugMode" type="boolean | 'verbose'" default="false">
+  Enables console logging of dependency tracking activity. When set to `'verbose'`, the subscriptions created during every re-derive are logged instead of only on the first run.
+</ParamField>
+
+---
+
+## Return Value
+
+`createDerivedStore` returns a `DerivedStore<Derived>`, which extends the standard store API with two additional methods.
+
+<ResponseField name="getState" type="() => Derived">
+  Returns the current derived value. If the store has not yet been activated (no subscribers), calling `getState` will trigger the initial derivation.
+</ResponseField>
+
+<ResponseField name="subscribe" type="SubscribeOverloads<Derived>">
+  Subscribes to changes in the derived value. The subscriber receives `(nextValue, prevValue)`. A derived store with at least one subscriber stays active; when the last subscriber leaves the store destroys itself (unless `keepAlive: true`).
+</ResponseField>
+
+<ResponseField name="destroy" type="() => void">
+  Tears down the derived store, unsubscribes from all source stores, and releases internal resources. Derived stores clean up automatically when they have no subscribers, so explicit calls to `destroy` are only needed when `keepAlive: true` is set.
+</ResponseField>
+
+<ResponseField name="flushUpdates" type="() => void">
+  Forces a synchronous re-derive and immediately notifies subscribers. Only meaningful for debounced derived stores — calling this on a non-debounced store is a no-op.
+</ResponseField>
+
+<ResponseField name="getInitialState" type="() => Derived">
+  **Deprecated.** Throws at runtime. Derived stores do not have a fixed initial state — their value is always computed. This method exists only to satisfy the store interface for type-level compatibility.
+</ResponseField>
+
+<ResponseField name="setState" type="(...args: SetStateArgs<Derived>) => void">
+  **Deprecated.** Throws at runtime. Derived stores are read-only; their state is fully determined by the derive function.
+</ResponseField>
+
+### React Hook Usage
+
+In the React build, `DerivedStore<Derived>` is also callable as a hook:
+
+```ts
+// Subscribe to the full derived value
+const total = totalStore();
+
+// Subscribe to a selected slice
+const formattedTotal = totalStore(s => s.formatted);
+
+// Subscribe with a custom equality function
+const items = totalStore(s => s.lineItems, shallowEqual);
+```
+
+---
+
+## Example
+
+The following example mirrors the pattern shown in the repository README.
+
+```ts
+import { createBaseStore, createDerivedStore } from '@storesjs/stores';
+
+type Settings = { currency: string; locale: string };
+type Cart = { subtotal: number; tax: number };
+
+export const settingsStore = createBaseStore<Settings>(set => ({
+  currency: 'USD',
+  locale: 'en-US',
+  setCurrency: (currency: string) => set({ currency }),
+}));
+
+export const cartStore = createBaseStore<Cart>(() => ({
+  subtotal: 0,
+  tax: 0,
+}));
+
+// Re-derives whenever currency, subtotal, or tax changes
+export const totalStore = createDerivedStore($ => {
+  const { currency } = $(settingsStore);
+  const { subtotal, tax } = $(cartStore);
+
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+  }).format(subtotal + tax);
+}, Object.is);
+```
+
+```tsx
+function CartTotal() {
+  const total = totalStore();
+  return <Text>Total: {total}</Text>;
+}
+```
+
+```ts
+// Outside React
+const total = totalStore.getState();
+const unsubscribe = totalStore.subscribe(
+  next => console.log('total changed:', next)
+);
+```
+
+### Debounced Derived Store
+
+```ts
+import { shallowEqual } from '@storesjs/stores';
+
+const searchResultsStore = createDerivedStore(
+  $ => {
+    const query = $(searchStore).query.trim().toLowerCase();
+    const items = $(itemsStore).items;
+    return items.filter(item => item.name.toLowerCase().includes(query));
+  },
+  {
+    equalityFn: shallowEqual,
+    debounce: { delay: 150, leading: false, trailing: true },
+  }
+);
+```

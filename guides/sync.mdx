@@ -1,0 +1,239 @@
+---
+title: "Cross-Tab and Cross-Context State Sync"
+sidebarTitle: "Sync"
+description: "Synchronize store state across browser tabs, extension contexts, or custom transports using the built-in sync engine or a custom SyncEngine implementation."
+---
+
+State changes in one browser tab don't automatically appear in others. The sync system in `@storesjs/stores` bridges that gap by broadcasting store updates across tabs, windows, or any custom transport you provide. Each store opts in with a single `sync` option, and the framework takes care of diffing, routing, and applying incoming updates — no boilerplate required.
+
+## Enabling Sync
+
+Add the `sync` option alongside `storageKey` when creating a base store. The simplest form is `sync: true`, which reuses the storage key as the sync identifier:
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+
+type AppState = {
+  theme: 'light' | 'dark';
+  setTheme: (theme: 'light' | 'dark') => void;
+};
+
+export const appStore = createBaseStore<AppState>(
+  set => ({
+    theme: 'dark',
+    setTheme: theme => set({ theme }),
+  }),
+  {
+    storageKey: 'app',
+    sync: true, // inherits key from storageKey
+  }
+);
+```
+
+Now when `theme` changes in one tab, every other tab receives the update and re-renders automatically.
+
+## `sync` Option Variants
+
+The `sync` field accepts three forms:
+
+| Value | Behavior |
+|---|---|
+| `true` | Uses `storageKey` as the sync key. Requires `storageKey` to be set. |
+| `string` | Explicit sync key. Can be used with or without persistence. |
+| `SyncConfig` object | Full control — key, field filter, engine, merge functions, and metadata. |
+
+```ts
+// Explicit key (no persistence required)
+createBaseStore<AppState>(set => ({ ... }), {
+  sync: 'app-theme',
+});
+
+// Full SyncConfig object
+createBaseStore<AppState>(set => ({ ... }), {
+  storageKey: 'app',
+  sync: {
+    key: 'app-theme',
+    fields: ['theme'],
+  },
+});
+```
+
+## `SyncConfig` Fields
+
+When passing a `SyncConfig` object, all fields except `key` are optional.
+
+| Field | Type | Description |
+|---|---|---|
+| `key` | `string` | Unique identifier shared across all clients that should stay in sync. Required unless `storageKey` is used with `sync: true`. |
+| `fields` | `ReadonlyArray<string>` | State keys to sync. Defaults to all non-function properties. |
+| `engine` | `SyncEngine` | Custom sync engine. Overrides the global engine for this store only. |
+| `merge` | `{ [key]: SyncMergeFn }` | Per-key merge function for conflict resolution. |
+| `injectStorageMetadata` | `boolean` | Embeds origin and timestamp metadata into the persisted storage payload. Required for storage-event-based transports. Defaults to `false`. |
+
+### Syncing Only Specific Fields
+
+Use `fields` to limit which parts of the state are broadcast:
+
+```ts
+createBaseStore<AppState>(set => ({ ... }), {
+  storageKey: 'app',
+  sync: {
+    key: 'app',
+    fields: ['theme'], // only sync 'theme'; other state stays local
+  },
+});
+```
+
+## Default Sync Engine
+
+In browser environments, `@storesjs/stores` uses a `BroadcastChannel`-based engine by default. It broadcasts updates to all other tabs on the same origin. For older browsers or environments without `BroadcastChannel`, it falls back to `localStorage` storage events. Outside of browsers (Node.js, test environments), the default engine is a no-op that silently discards all messages.
+
+## `SyncEngine` Interface
+
+Implement this interface to plug in a custom transport:
+
+```ts
+interface SyncEngine {
+  /** Unique identifier for this client session. */
+  readonly sessionId: string;
+
+  /**
+   * When true, embeds sync metadata into the persisted storage payload.
+   * Required when storage writes are the transport mechanism.
+   */
+  readonly injectStorageMetadata?: boolean;
+
+  /** Register a store for synchronization. Returns a handle to control its lifecycle. */
+  register<T extends Record<string, unknown>>(
+    registration: SyncRegistration<T>
+  ): SyncHandle<T>;
+}
+```
+
+### `SyncRegistration`
+
+Passed to `engine.register()` when a store initializes:
+
+```ts
+type SyncRegistration<T> = {
+  /** Shared key identifying this store to the engine. */
+  key: string;
+  /** State keys this store is interested in receiving. */
+  fields: ReadonlyArray<string>;
+  /** Returns the store's current state. */
+  getState: () => T;
+  /** Apply an incoming update to the store. */
+  apply: (update: SyncUpdate<T>) => void;
+};
+```
+
+### `SyncHandle`
+
+Returned by `engine.register()`. Controls the sync lifecycle for a single store:
+
+```ts
+interface SyncHandle<T> {
+  /** Permanently unregister this store from the engine. */
+  destroy: () => void;
+
+  /**
+   * Broadcasts a state update to other clients.
+   * Set to null for engines where publishing is implicit (e.g., chrome.storage).
+   */
+  publish: ((update: SyncUpdate<T>) => void) | null;
+
+  /** Called when the store gains its first subscriber. Use for lazy resource setup. */
+  onFirstSubscribe?: () => void;
+
+  /** Called when the store loses its last subscriber. Use for cleanup. */
+  onLastUnsubscribe?: () => void;
+
+  /** Register a one-time callback that fires when hydration completes. */
+  onHydrated?: (callback: () => void) => void;
+
+  /** Returns true once the store has received its initial state from the engine. */
+  hydrated?: () => boolean;
+}
+```
+
+### `SyncUpdate`
+
+The payload delivered to `registration.apply` on incoming messages:
+
+```ts
+type SyncUpdate<T> = {
+  replace: boolean;
+  sessionId: string;
+  timestamp: number;
+  values: Partial<T>;
+};
+```
+
+## Custom Sync Engine Example
+
+```ts
+import type { SyncEngine, SyncHandle, SyncRegistration } from '@storesjs/stores';
+
+class MyWebSocketEngine implements SyncEngine {
+  readonly sessionId = crypto.randomUUID();
+
+  register<T extends Record<string, unknown>>(
+    registration: SyncRegistration<T>
+  ): SyncHandle<T> {
+    const socket = new WebSocket(`wss://sync.example.com/${registration.key}`);
+
+    socket.onmessage = event => {
+      const update = JSON.parse(event.data);
+      // Filter to registered fields before applying
+      registration.apply(update);
+    };
+
+    return {
+      destroy: () => socket.close(),
+      publish: update => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(update));
+        }
+      },
+      onFirstSubscribe: () => socket.send(JSON.stringify({ type: 'subscribe' })),
+      onLastUnsubscribe: () => socket.send(JSON.stringify({ type: 'unsubscribe' })),
+    };
+  }
+}
+```
+
+Register the engine globally with `configureStores`:
+
+```ts
+import { configureStores } from '@storesjs/stores';
+
+configureStores({
+  syncEngine: new MyWebSocketEngine(),
+});
+```
+
+Or per-store via the `engine` field in `SyncConfig`:
+
+```ts
+createBaseStore<AppState>(set => ({ ... }), {
+  storageKey: 'app',
+  sync: {
+    key: 'app',
+    engine: new MyWebSocketEngine(),
+  },
+});
+```
+
+<Note>
+Sync can be used **without persistence**. When no `storageKey` is set, pass an explicit string as the `sync` key. The `true` shorthand is only available when `storageKey` is also present, since it derives the sync key from there.
+
+```ts
+createBaseStore<AppState>(set => ({ ... }), {
+  sync: 'app-theme', // explicit key, no storageKey needed
+});
+```
+</Note>
+
+<Tip>
+Set `injectStorageMetadata: true` when building a Chrome extension that syncs state via `chrome.storage`. Because `chrome.storage` events fire on every write, the injected `{ origin, timestamp, fields }` payload lets the engine filter out self-originated updates and avoid processing stale messages. The `BroadcastChannel` engine does not need this option — it filters by `sessionId` internally.
+</Tip>

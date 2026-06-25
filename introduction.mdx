@@ -1,0 +1,134 @@
+---
+title: "Stores: Reactive State for React and React Native"
+sidebarTitle: "Introduction"
+description: "Stores is a reactive state framework that composes base, derived, and query stores into a lazy, dependency-tracked graph for React and React Native."
+---
+
+Stores is a reactive state framework for React and React Native built on Zustand's store model. It defines three types of runtime-evaluated stores — **base**, **derived**, and **query** — each representing a distinct category of state: local, computed, or asynchronously fetched. Every store is a node. Together they form a composed, dependency-tracked graph that evaluates lazily and cleans up automatically when consumers disappear.
+
+## The Three Store Types
+
+Every application built with Stores is composed of these three building blocks:
+
+<CardGroup cols={3}>
+  <Card title="Base Store" icon="database" href="/concepts/base-store">
+    Defines synchronous local state with explicit update methods. The foundation of your store graph — every piece of mutable state starts here.
+  </Card>
+  <Card title="Derived Store" icon="arrow-right-arrow-left" href="/concepts/derived-store">
+    Computes values from one or more other stores. Re-runs only when its tracked inputs change. Automatically unsubscribes when no consumers remain.
+  </Card>
+  <Card title="Query Store" icon="cloud-arrow-down" href="/concepts/query-store">
+    Fetches, caches, and revalidates async data. Refetches automatically when its reactive parameters change. Remains idle when unobserved.
+  </Card>
+</CardGroup>
+
+**Base stores** define local state along with an explicit interface for reading and updating that state:
+
+```ts
+export const settingsStore = createBaseStore<Settings>(set => ({
+  currency: 'USD',
+  locale: 'en-US',
+  setCurrency: currency => set({ currency }),
+}));
+```
+
+**Derived stores** compute values from other stores. They receive a `$` accessor that tracks dependencies at runtime and re-derive whenever those dependencies produce new values:
+
+```ts
+export const currencyFormatterStore = createDerivedStore($ => {
+  const { currency, locale } = $(settingsStore);
+  return new Intl.NumberFormat(locale, { currency, style: 'currency' });
+});
+```
+
+**Query stores** manage remote data. They accept a `fetcher` function and optionally a `params` map whose values can themselves be reactive, re-triggering a fetch when they change:
+
+```ts
+export const accountStore = createQueryStore<Account, { userId: string }>({
+  fetcher: fetchAccount,
+  params: {
+    userId: $ => $(authStore).userId,
+  },
+  staleTime: time.minutes(10),
+});
+```
+
+## Runtime Dependency Tracking via `$`
+
+The `$` accessor is Stores' mechanism for building a reactive dependency graph at runtime. Inside a `createDerivedStore` derive function (or a query store's `params` map), calling `$(someStore)` both reads the store's current state and registers it as a dependency of the enclosing computation:
+
+```ts
+const filteredFilmsStore = createDerivedStore($ => {
+  const films  = $(filmsStore).getData();
+  const query  = $(searchStore).query.toLowerCase();
+  const sortBy = $(sortStore).sortBy;
+
+  return films?.filter(film => film.title.toLowerCase().includes(query));
+});
+```
+
+Whenever `filmsStore`, `searchStore`, or `sortStore` emit a new value, `filteredFilmsStore` re-derives automatically. Stores that are not observed never run.
+
+<Note>
+  The `$` accessor is only available inside the derive function passed to `createDerivedStore` and inside `params` values passed to `createQueryStore`. It cannot be called outside those contexts.
+</Note>
+
+## Lazy Evaluation and Automatic Cleanup
+
+No store performs any work until it has at least one active consumer. A derived store does not subscribe to its dependencies until something subscribes to it. A query store does not issue a network request until it is observed. When the last consumer unsubscribes, derived and query stores release their own subscriptions and return to an idle state — no manual teardown required.
+
+This makes the graph naturally efficient: only the subgraph currently needed by your UI is active at any given time.
+
+## The Store Interface
+
+All store types expose a consistent API that works identically inside and outside React:
+
+```ts
+store.getState()                           // Read current state snapshot
+store.setState(partial | updater)          // Update state (base and query stores only)
+store.subscribe(selector, listener, opts?) // Subscribe to a slice of state
+```
+
+The `subscribe` method accepts a selector and a listener, calling the listener whenever the selected value changes:
+
+```ts
+const unsubscribe = settingsStore.subscribe(
+  s => s.currency,
+  currency => console.log('Currency changed:', currency)
+);
+
+// Later:
+unsubscribe();
+```
+
+## Stores as React Hooks
+
+In the React (and React Native) build, every store is also a callable hook. You can subscribe to the full state or pass a selector with an optional equality function:
+
+```ts
+// Subscribe to full state
+const settings = settingsStore();
+
+// Subscribe to a single field — re-renders only when `currency` changes
+const currency = settingsStore(s => s.currency);
+
+// Subscribe with a custom equality function
+const items = cartStore(s => s.items, shallowEqual);
+```
+
+Because stores are hooks when called as functions, you get React's rendering semantics — components re-render only when the selected slice changes — with none of the Provider boilerplate.
+
+<Note>
+  Outside of React components and hooks, always use `store.getState()` and `store.subscribe()` instead of calling the store as a function.
+</Note>
+
+## How Stores Relates to Zustand
+
+Stores is built on top of Zustand's store model. The underlying store object for a base store is a Zustand store — you get the same `getState`, `setState`, and `subscribe` primitives you're used to. What Stores adds on top of that foundation is:
+
+- **Derived stores** — reactive computed state with automatic dependency tracking
+- **Query stores** — async data fetching with caching, staleness management, and reactive params
+- **A composed reactive graph** — stores reference each other through `$`, forming a dependency graph that evaluates lazily and cleans up automatically
+- **A unified hook model** — every store is callable as a React hook without any Provider
+
+If you already know Zustand, base stores will feel immediately familiar. Derived and query stores are the new layer that turns isolated stores into a coherent reactive system.

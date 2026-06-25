@@ -1,47 +1,236 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Stores in 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install @storesjs/stores and build a reactive store graph with base, derived, and query stores in a few steps."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through installing `@storesjs/stores` and composing a reactive store graph — a base store for settings, a query store for remote account data, and a derived store that combines them both — then consuming the result in a React component.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+<Step title="Install @storesjs/stores">
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Add `@storesjs/stores` to your project with your preferred package manager:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+<CodeGroup>
+
+```bash npm
+npm install @storesjs/stores
+```
+
+```bash yarn
+yarn add @storesjs/stores
+```
+
+```bash pnpm
+pnpm add @storesjs/stores
+```
+
+</CodeGroup>
+
+React ≥18 is an optional peer dependency for the React build. React Native ≥0.69 is required for the native build. See [Installation](/installation) for full peer dependency details.
+
+</Step>
+
+<Step title="Create a base store">
+
+A base store defines synchronous local state along with methods for updating it. Create `settingsStore.ts` to hold user preferences:
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+
+type Settings = {
+  currency: string;
+  locale: string;
+  setCurrency: (currency: string) => void;
+};
+
+export const settingsStore = createBaseStore<Settings>(set => ({
+  currency: 'USD',
+  locale: 'en-US',
+  setCurrency: currency => set({ currency }),
+}));
+```
+
+Read and update state outside React using the store object directly:
+
+```ts
+// Read current state
+const { currency } = settingsStore.getState();
+
+// Update state
+settingsStore.getState().setCurrency('EUR');
+
+// Subscribe to changes
+const unsubscribe = settingsStore.subscribe(
+  s => s.currency,
+  currency => console.log('Currency changed:', currency)
+);
+```
+
+</Step>
+
+<Step title="Create a derived store">
+
+Derived stores compute values from other stores. The `$` accessor tracks dependencies at runtime — whenever a tracked store changes, the derived store re-computes automatically:
+
+```ts
+import { createDerivedStore } from '@storesjs/stores';
+import { settingsStore } from './settingsStore';
+
+export const currencyFormatterStore = createDerivedStore($ => {
+  const { currency, locale } = $(settingsStore);
+
+  return new Intl.NumberFormat(locale, {
+    currency,
+    style: 'currency',
+  });
+});
+```
+
+Every property accessed through `$(settingsStore)` — `currency` and `locale` — is tracked. If either changes, `currencyFormatterStore` produces a new `Intl.NumberFormat` instance.
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+  Derived stores are read-only. They do not expose `setState`. If you need to combine remote data with local state, reach for a query store.
+</Tip>
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+</Step>
+
+<Step title="Create a query store">
+
+Query stores fetch, cache, and revalidate async data. Their `params` values can themselves be reactive — when a param changes, the store refetches:
+
+```ts
+import { createQueryStore, time } from '@storesjs/stores';
+import { authStore } from './authStore';
+
+type Account = {
+  id: string;
+  balance: number;
+};
+
+type Params = {
+  userId: string;
+};
+
+export const accountStore = createQueryStore<Account, Params>({
+  fetcher: fetchAccount,
+  params: {
+    userId: $ => $(authStore).userId,
+  },
+  staleTime: time.minutes(10),
+});
+
+async function fetchAccount({ userId }: Params): Promise<Account> {
+  const res = await fetch(`/api/accounts/${userId}`);
+  if (!res.ok) throw new Error('Failed to fetch account');
+  return res.json();
+}
+```
+
+The `staleTime` option controls how long cached data is considered fresh before a re-fetch is triggered. `time.minutes(10)` is a built-in helper that converts to milliseconds.
+
+Access the fetched data via `getData()`:
+
+```ts
+// Outside React
+const account = accountStore.getState().getData();
+
+// Trigger a manual refetch
+accountStore.getState().fetch();
+```
+
+</Step>
+
+<Step title="Use stores as React hooks">
+
+In the React build, every store is a callable hook. Pass a selector to subscribe to only the slice of state you need — the component re-renders only when that value changes:
+
+```tsx
+import { accountStore } from './accountStore';
+import { currencyFormatterStore } from './currencyFormatterStore';
+import { settingsStore } from './settingsStore';
+
+function CurrencySelector() {
+  const currency = settingsStore(s => s.currency);
+  const setCurrency = settingsStore(s => s.setCurrency);
+
+  return (
+    <select value={currency} onChange={e => setCurrency(e.target.value)}>
+      <option value="USD">USD</option>
+      <option value="EUR">EUR</option>
+      <option value="GBP">GBP</option>
+    </select>
+  );
+}
+```
+
+</Step>
+
+</Steps>
+
+## Composed Example
+
+Here is the full composed graph from the README — a derived store that formats an account balance using live settings, and a component that renders the result:
+
+```ts
+// currencyFormatterStore.ts
+import { createDerivedStore } from '@storesjs/stores';
+import { settingsStore } from './settingsStore';
+
+export const currencyFormatterStore = createDerivedStore($ => {
+  const { currency, locale } = $(settingsStore);
+  return new Intl.NumberFormat(locale, {
+    currency,
+    style: 'currency',
+  });
+});
+```
+
+```ts
+// accountBalanceStore.ts
+import { createDerivedStore } from '@storesjs/stores';
+import { accountStore } from './accountStore';
+import { currencyFormatterStore } from './currencyFormatterStore';
+
+export const accountBalanceStore = createDerivedStore($ => {
+  const balance   = $(accountStore).getData()?.balance ?? 0;
+  const formatter = $(currencyFormatterStore);
+  return formatter.format(balance);
+});
+```
+
+```tsx
+// AccountSummary.tsx
+import { accountBalanceStore } from './accountBalanceStore';
+
+function AccountSummary() {
+  const balance = accountBalanceStore();
+  return <Text>Balance: {balance}</Text>;
+}
+```
+
+`AccountSummary` subscribes to `accountBalanceStore`, which in turn tracks `accountStore` and `currencyFormatterStore`. `currencyFormatterStore` tracks `settingsStore`. The entire chain reacts automatically — change the currency in settings and the displayed balance re-formats without any manual wiring.
+
+## Global Configuration
+
+Before creating any stores, you can call `configureStores()` to set global defaults such as a custom storage backend, storage key prefix, or default query options:
+
+```ts
+import { configureStores } from '@storesjs/stores';
+
+configureStores({
+  storageKeyPrefix: 'myapp:',
+  queryStoreDefaults: {
+    staleTime: time.minutes(5),
+  },
+});
+```
+
+<Note>
+  `configureStores()` must be called **before** any store is created. Calling it after the first store creation will throw in development. See the configuration guide for all available options.
+</Note>
+
+<Tip>
+  Outside React, use `.getState()` to read and `.subscribe(selector, listener)` to react to changes. The callable hook form — `store()` — is only available in the React and React Native builds.
 </Tip>

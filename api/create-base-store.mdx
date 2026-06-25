@@ -1,0 +1,275 @@
+---
+title: "createBaseStore API Reference"
+sidebarTitle: "createBaseStore"
+description: "createBaseStore creates a local synchronous store from a state creator function. Accepts optional persistence and sync configuration."
+---
+
+`createBaseStore` is the foundational store factory in `@storesjs/stores`. It creates a local, synchronous store from a state creator function and returns a store object that exposes `getState`, `setState`, `subscribe`, and `getInitialState`. When a `storageKey` is provided through the options, the store also gains a `.persist` namespace with hydration and storage-management utilities. In the React build the returned store is also callable as a hook, letting you subscribe to a slice of state with an optional selector and equality function.
+
+## Signature
+
+```ts
+function createBaseStore<S>(createState: StateCreator<S>): Store<S>
+
+function createBaseStore<S, PersistedState extends Partial<S>, PersistReturn extends void | Promise<void>>(
+  createState: StateCreator<S>,
+  options: BaseStoreOptions<S, PersistedState, PersistReturn>
+): Store<S, PersistedState, PersistReturn>
+```
+
+The `PersistReturn` type parameter controls whether `setState` is synchronous (`void`) or asynchronous (`Promise<void>`), which is inferred automatically from the storage adapter you provide.
+
+### `StateCreator<S>`
+
+The state creator is a function called once at store construction time. It receives three arguments and must return the initial state object `S`.
+
+```ts
+type StateCreator<S> = (
+  set: SetState<S>,
+  get: () => S,
+  store: StoreApi<S>
+) => S
+```
+
+<ParamField path="set" type="(update: Partial<S> | ((state: S) => Partial<S>), replace?: boolean) => void" required>
+  Updates the store's state. Accepts a partial state object, a full state replacement object (when `replace` is `true`), or an updater function that receives the current state and returns an updated slice.
+</ParamField>
+
+<ParamField path="get" type="() => S" required>
+  Returns the current state snapshot. Useful for reading current values inside action functions before or after calling `set`.
+</ParamField>
+
+<ParamField path="store" type="StoreApi<S>" required>
+  The raw store object. Gives you access to `getState`, `setState`, and `subscribe` from within the state creator, which can be passed to utilities or closures that need a stable store reference.
+</ParamField>
+
+---
+
+## Parameters
+
+<ParamField path="createState" type="StateCreator<S>" required>
+  The state creator function described above. This is the only required argument.
+</ParamField>
+
+<ParamField path="options" type="BaseStoreOptions<S, PersistedState, PersistReturn>">
+  Optional configuration object. Accepts the `PersistConfig` fields below plus an optional `sync` field. Providing `storageKey` activates persistence and adds `.persist` to the returned store.
+
+  <Expandable title="PersistConfig fields">
+    <ParamField path="storageKey" type="string" required>
+      The unique key used to read and write state in the configured storage backend. Required when persistence is enabled. Changing this key between app versions effectively resets the persisted state.
+    </ParamField>
+
+    <ParamField path="partialize" type="(state: Readonly<S>) => PersistedState">
+      A function that receives the full state and returns only the slice that should be written to storage. By default the entire state object is persisted. Use this to exclude transient or derived fields.
+
+      ```ts
+      partialize: state => ({ currency: state.currency })
+      ```
+    </ParamField>
+
+    <ParamField path="version" type="number" default="0">
+      The current schema version. When the version stored on disk differs from this value, `migrate` is called before the persisted state is merged into the store.
+    </ParamField>
+
+    <ParamField path="migrate" type="(persistedState: PersistedState, version: number) => PersistedState | Promise<PersistedState>">
+      An optional migration function invoked when the persisted schema version does not match `version`. Receives the raw persisted state and the version it was saved with. Should return the migrated state. May be async.
+    </ParamField>
+
+    <ParamField path="merge" type="(persistedState: PersistedState | undefined, currentState: S) => S">
+      Controls how the persisted snapshot is merged into the in-memory state during hydration. By default a shallow merge is performed. Override this when you need deep merging or special handling of collections.
+    </ParamField>
+
+    <ParamField path="onRehydrateStorage" type="(state: S) => ((state?: S, error?: unknown) => void) | void">
+      A callback invoked before hydration begins. The function it returns (if any) is called after hydration completes or when an error occurs, receiving the final state and any error that was thrown.
+    </ParamField>
+
+    <ParamField path="serializer" type="(storageValue: StorageValue<PersistedState>) => string">
+      Custom serialization function. Converts the internal `StorageValue` envelope (which includes the state and schema version) into a string for storage. Defaults to `JSON.stringify` after the storage adapter's own serializer is applied.
+    </ParamField>
+
+    <ParamField path="deserializer" type="(serializedState: unknown) => StorageValue<PersistedState>">
+      Custom deserialization function. The inverse of `serializer`; converts a raw stored value back into the `StorageValue` envelope. Defaults to `JSON.parse` after the storage adapter's own deserializer is applied.
+    </ParamField>
+
+    <ParamField path="storage" type="SyncStorageInterface | AsyncStorageInterface">
+      The storage backend to use. Supply a `SyncStorageInterface` (e.g. `localStorage`, MMKV) to keep `setState` synchronous. Supply an `AsyncStorageInterface` (e.g. Chrome storage, async MMKV) to make `setState` return `Promise<void>`. When omitted the default platform storage is used.
+    </ParamField>
+
+    <ParamField path="persistThrottleMs" type="number">
+      Throttle interval in milliseconds between successive writes to storage. Helps reduce I/O pressure when state changes rapidly. Defaults to `time.seconds(3)` on iOS and `time.seconds(5)` on Android. Only valid for synchronous storage — set to `undefined` for async storage.
+    </ParamField>
+
+    <ParamField path="sync" type="SyncConfig | string | true">
+      Enables cross-tab or cross-context state synchronization. Pass `true` to inherit the sync key from `storageKey`, a plain string to use a custom key, or a `SyncConfig` object for full control.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Return Value
+
+`createBaseStore` returns a `Store<S>` (non-persisted) or `Store<S, PersistedState, PersistReturn>` (persisted). Both variants expose the same core store API.
+
+### Store API
+
+<ResponseField name="getState" type="() => S">
+  Returns the current state snapshot synchronously. Safe to call anywhere — inside or outside React.
+</ResponseField>
+
+<ResponseField name="setState" type="(update: Partial<S> | ((state: S) => Partial<S>), replace?: false) => PersistReturn">
+  Merges a partial state update into the current state. When `replace` is `true`, the second overload replaces the entire state object. For stores backed by async storage, returns a `Promise<void>` that resolves once the state has been written to disk.
+</ResponseField>
+
+<ResponseField name="subscribe" type="SubscribeOverloads<S>">
+  Subscribes to state changes. Returns an unsubscribe function.
+
+  <Expandable title="Overloads">
+    <ResponseField name="subscribe(listener)" type="(listener: (state: S, prevState: S) => void) => () => void">
+      Fires `listener` on every state change with the next and previous full state.
+    </ResponseField>
+
+    <ResponseField name="subscribe(selector, listener, options?)" type="(selector, listener, options?) => () => void">
+      Fires `listener` only when the value returned by `selector` changes according to `equalityFn`. Useful for subscribing to a single field without reacting to unrelated changes.
+
+      <Expandable title="options">
+        <ParamField path="equalityFn" type="(a: Selected, b: Selected) => boolean" default="Object.is">
+          Custom comparison used to decide whether the selected value has changed.
+        </ParamField>
+        <ParamField path="fireImmediately" type="boolean" default="false">
+          When `true`, the listener is called once immediately with the current selected value upon subscription.
+        </ParamField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="getInitialState" type="() => S">
+  Returns the initial state object produced by `createState` at construction time, before any `setState` calls. Useful for resetting a store to its defaults.
+</ResponseField>
+
+### `.persist` (persisted stores only)
+
+When a `storageKey` is provided, the returned store exposes a `.persist` namespace.
+
+<ResponseField name="persist.hasHydrated" type="() => boolean">
+  Returns `true` if the initial hydration pass from storage has completed (or if no persisted data was found).
+</ResponseField>
+
+<ResponseField name="persist.rehydrate" type="() => Promise<void> | void">
+  Manually triggers a re-read from storage and merges the result into the current state. Returns a promise for async storage backends.
+</ResponseField>
+
+<ResponseField name="persist.clearStorage" type="() => void">
+  Removes the persisted entry for this store from storage without modifying the in-memory state.
+</ResponseField>
+
+<ResponseField name="persist.onHydrate" type="(listener: (state: S) => void) => () => void">
+  Registers a listener that fires when hydration begins. Returns an unsubscribe function.
+</ResponseField>
+
+<ResponseField name="persist.onFinishHydration" type="(listener: (state: S) => void) => () => void">
+  Registers a listener that fires after hydration completes. Returns an unsubscribe function.
+</ResponseField>
+
+<ResponseField name="persist.getOptions" type="() => Partial<PersistOptions<S, PersistedState>>">
+  Returns the active persistence options object, including the storage adapter and schema version.
+</ResponseField>
+
+<ResponseField name="persist.setOptions" type="(options: Partial<PersistOptions<S, PersistedState>>) => void">
+  Merges new persistence options into the active configuration at runtime. Useful for swapping the storage backend after initialization.
+</ResponseField>
+
+<ResponseField name="persist.hydrationPromise" type="() => Promise<void>">
+  Available only for async storage backends. Returns a promise that resolves once the initial hydration pass has finished. Useful for awaiting hydration in setup or test code.
+
+  ```ts
+  await store.persist.hydrationPromise();
+  ```
+</ResponseField>
+
+### React Hook Usage
+
+In the React build every store is also callable as a hook:
+
+```ts
+// Subscribe to the full state
+const state = store();
+
+// Subscribe to a selected slice
+const currency = store(s => s.currency);
+
+// Subscribe with a custom equality function
+const items = store(s => s.items, shallowEqual);
+```
+
+Calling the store as a hook inside a component automatically subscribes to the selected state and triggers a re-render when it changes.
+
+---
+
+## Example
+
+```ts
+import { createBaseStore } from '@storesjs/stores';
+import { time } from '@storesjs/stores/utils';
+
+type Settings = {
+  currency: string;
+  locale: string;
+  darkMode: boolean;
+  setCurrency: (currency: string) => void;
+  setLocale: (locale: string) => void;
+  toggleDarkMode: () => void;
+};
+
+export const settingsStore = createBaseStore<Settings, Pick<Settings, 'currency' | 'locale' | 'darkMode'>>(
+  set => ({
+    currency: 'USD',
+    locale: 'en-US',
+    darkMode: false,
+    setCurrency: currency => set({ currency }),
+    setLocale: locale => set({ locale }),
+    toggleDarkMode: () => set(s => ({ darkMode: !s.darkMode })),
+  }),
+  {
+    storageKey: 'app.settings',
+    version: 2,
+    partialize: ({ currency, locale, darkMode }) => ({ currency, locale, darkMode }),
+    migrate: (persisted, version) => {
+      // v1 stored `theme` instead of `darkMode`
+      if (version < 2 && 'theme' in persisted) {
+        const { theme, ...rest } = persisted as typeof persisted & { theme: string };
+        return { ...rest, darkMode: theme === 'dark' };
+      }
+      return persisted;
+    },
+    persistThrottleMs: time.seconds(2),
+  }
+);
+```
+
+```tsx
+// Inside a React component
+function CurrencyPicker() {
+  const currency = settingsStore(s => s.currency);
+  const setCurrency = settingsStore(s => s.setCurrency);
+
+  return (
+    <select value={currency} onChange={e => setCurrency(e.target.value)}>
+      <option value="USD">USD</option>
+      <option value="EUR">EUR</option>
+    </select>
+  );
+}
+```
+
+```ts
+// Outside React
+const { currency, locale } = settingsStore.getState();
+
+const unsubscribe = settingsStore.subscribe(
+  s => s.currency,
+  (next, prev) => console.log('currency changed', prev, '->', next),
+  { fireImmediately: true }
+);
+```

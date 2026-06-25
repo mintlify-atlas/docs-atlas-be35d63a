@@ -1,0 +1,369 @@
+---
+title: "createQueryStore API Reference"
+sidebarTitle: "createQueryStore"
+description: "createQueryStore creates a store that fetches, caches, and revalidates async data. Parameters are tracked reactively to trigger automatic refetches."
+---
+
+`createQueryStore` creates a store that manages the full lifecycle of remote data: fetching, caching, staleness, error handling, and retry. Parameters passed to the store's `fetcher` function can be reactive — derived from other stores via the `$` accessor — so that changes to upstream state automatically trigger a re-fetch. The resulting store exposes a consistent query state shape through `.getState()`, and in the React build is also callable as a hook. Query stores integrate naturally with `createBaseStore` persistence and accept optional custom state to co-locate related non-query state.
+
+## Signatures
+
+```ts
+// Without custom state
+function createQueryStore<TQueryFnData, TParams, TData = TQueryFnData>(
+  config: QueryStoreConfig<TQueryFnData, TParams, TData>,
+  options?: BaseStoreOptions<QueryStoreState<TData, TParams>>
+): Store<QueryStoreState<TData, TParams>>
+
+// With custom state
+function createQueryStore<TQueryFnData, TParams, CustomState, TData = TQueryFnData>(
+  config: QueryStoreConfig<TQueryFnData, TParams, TData, CustomState>,
+  stateCreator: StateCreator<QueryStoreState<TData, TParams, CustomState>, CustomState>,
+  options?: BaseStoreOptions<QueryStoreState<TData, TParams, CustomState>>
+): Store<QueryStoreState<TData, TParams, CustomState>>
+```
+
+The three type parameters you use most often are:
+- `TQueryFnData` — the raw type returned by `fetcher`
+- `TParams` — the shape of the parameters object passed to `fetcher` (defaults to `Record<string, never>` for parameter-free stores)
+- `TData` — the type after `transform` is applied (defaults to `TQueryFnData`)
+
+---
+
+## Config (`QueryStoreConfig`)
+
+The first argument to `createQueryStore` is the query configuration object. All fetch behavior is controlled here.
+
+<ParamField path="fetcher" type="(params: TParams, abortController: AbortController | null) => TQueryFnData | Promise<TQueryFnData>" required>
+  The function that performs the actual data fetch. Receives the resolved params and, by default, an `AbortController` whose signal you can pass to `fetch` or Axios. The abort controller is `null` when `abortInterruptedFetches` is `false` or when the fetch is triggered with `skipStoreUpdates: true`.
+</ParamField>
+
+<ParamField path="params" type="{ [K in keyof TParams]: QueryParam<TParams[K], S> }">
+  Reactive or static parameters passed to `fetcher`. Each key can be:
+
+  - A **static value** — `{ userId: 42 }`
+  - A **reactive function** `($, store) => value` — re-evaluated when its `$` dependencies change
+  - A `queryParam(value, { key })` wrapper — separates the fetch value from the key value used to generate the query key
+
+  When a reactive param changes, the store automatically refetches for the new parameter set.
+</ParamField>
+
+<ParamField path="staleTime" type="number | ReactiveParam<number, S>" default="time.minutes(2)">
+  The duration in milliseconds that fetched data is considered fresh. Once stale, the store will refetch in the background if there are active subscribers. Accepts a static number or a reactive function `($, store) => number`.
+</ParamField>
+
+<ParamField path="cacheTime" type="number | ((params: TParams) => number)" default="time.days(7)">
+  The maximum duration in milliseconds that data remains in `queryCache` before being eligible for pruning. Accepts a static number or a function of the current params.
+</ParamField>
+
+<ParamField path="enabled" type="boolean | ReactiveParam<boolean, S>" default="true">
+  Controls whether the store actively fetches. When `false`, no automatic fetching occurs until explicitly re-enabled. Accepts a static boolean or a reactive function `($, store) => boolean`.
+</ParamField>
+
+<ParamField path="maxRetries" type="number" default="5">
+  The maximum number of retry attempts after a fetch failure before the store transitions to `'error'` status.
+</ParamField>
+
+<ParamField path="retryDelay" type="number | ((retryCount: number, error: Error) => number)">
+  The delay between retry attempts in milliseconds. Accepts a fixed number or a function receiving the current retry count and the error. Defaults to exponential back-off starting at 5 seconds, doubling each retry, capped at 5 minutes:
+
+  ```ts
+  retryCount => Math.min(time.seconds(5) * Math.pow(2, retryCount), time.minutes(5))
+  ```
+</ParamField>
+
+<ParamField path="transform" type="(data: TQueryFnData, params: TParams) => TData">
+  Transforms the raw data returned by `fetcher` into the `TData` type stored in the cache. Required when `TData` and `TQueryFnData` differ. Receives both the raw data and the params that produced it.
+</ParamField>
+
+<ParamField path="onFetched" type="(info: OnFetchedParams<TData, TParams, CustomState>) => void">
+  A callback invoked after each successful fetch. Receives `{ data, params, fetch, set }`, where `set` is the store's `setState` function, allowing side effects such as writing related state.
+</ParamField>
+
+<ParamField path="onError" type="(error: Error, retryCount: number) => void">
+  A callback invoked whenever a fetch operation fails. Receives the error and the current retry count for the failing operation.
+</ParamField>
+
+<ParamField path="setData" type="(info: SetDataParams<TData, TParams, CustomState>) => void">
+  Overrides the default behavior of writing fetched data into `queryCache`. When provided you are fully responsible for storing and keying the data. Receives `{ data, params, queryKey, set }`. Automatic refetch scheduling continues to operate based on `staleTime`, but no data is written to the internal cache by the store itself.
+</ParamField>
+
+<ParamField path="keepPreviousData" type="boolean" default="false">
+  When `true`, `getData()` returns the most recently cached data for any key until fresh data for the current params is available. This prevents a flash of empty state during parameter transitions.
+</ParamField>
+
+<ParamField path="paramChangeThrottle" type="false | number | DebounceOptions" default="false">
+  Delays triggering a fetch when parameters change. Accepts `false` (no throttle), a number of milliseconds, or a full debounce configuration:
+
+  ```ts
+  type DebounceOptions = {
+    delay: number;
+    leading?: boolean;
+    trailing?: boolean;
+    maxWait?: number;
+  };
+  ```
+</ParamField>
+
+<ParamField path="disableAutoRefetching" type="boolean" default="false">
+  When `true`, the store will not automatically refetch data when it becomes stale while a component is already mounted. Stale data will still trigger a refetch on the next component mount.
+</ParamField>
+
+<ParamField path="disableCache" type="boolean" default="false">
+  When `true`, the store skips all internal caching. Every fetch is treated as if no cached data exists. Fetched data is not stored unless a custom `setData` function is provided.
+</ParamField>
+
+<ParamField path="abortInterruptedFetches" type="boolean" default="true">
+  When `true`, any in-flight fetch is aborted via `AbortController` when a new fetch is initiated due to a param change, or when all subscribed components unmount.
+</ParamField>
+
+<ParamField path="debugMode" type="boolean" default="false">
+  Enables verbose console logging of fetch lifecycle events, cache hits/misses, and param changes.
+</ParamField>
+
+<ParamField path="suppressStaleTimeWarning" type="boolean" default="false">
+  Suppresses the console warning emitted when `staleTime` is set below the recommended minimum.
+</ParamField>
+
+---
+
+## State Shape (`QueryStoreState`)
+
+The store's `.getState()` returns a `QueryStoreState<TData, TParams, CustomState>` object. All of the following methods and properties are available on the state.
+
+### Methods
+
+<ResponseField name="getData" type="(paramsOrQueryKey?: TParams | string) => TData | null">
+  Returns cached data for the given params or query key. When called with no argument, returns data for the store's current `queryKey`. Returns `null` when no cached data is available.
+</ResponseField>
+
+<ResponseField name="getStatus" type="(statusKey?: keyof QueryStatusInfo) => QueryStatusInfo | QueryStatusInfo[keyof QueryStatusInfo]">
+  Returns status information for the current query. Pass a specific key to read a single boolean rather than building the full object:
+
+  ```ts
+  store.getState().getStatus('isInitialLoad'); // boolean
+  store.getState().getStatus();                // QueryStatusInfo
+  ```
+
+  `QueryStatusInfo` shape:
+
+  ```ts
+  type QueryStatusInfo = {
+    isError: boolean;
+    isIdle: boolean;
+    isInitialLoad: boolean;
+    isLoading: boolean;
+    isSuccess: boolean;
+  };
+  ```
+</ResponseField>
+
+<ResponseField name="fetch" type="(params?: Partial<TParams>, options?: FetchOptions) => Promise<TData | null>">
+  Manually triggers a fetch. If no `params` are passed, uses the store's current parameters. Resolves with the fetched (and transformed) data, or `null` if the fetch fails or is skipped. See [`FetchOptions`](#fetchoptions) below.
+</ResponseField>
+
+<ResponseField name="getCacheEntry" type="(paramsOrQueryKey?: TParams | Partial<TParams> | string) => CacheEntry<TData> | null">
+  Returns the raw cache entry for the specified params or query key, or for the current params when called with no argument. Returns `null` when no entry exists.
+
+  ```ts
+  type CacheEntry<T> = {
+    cacheTime: number;
+    data: T | null;
+    lastFetchedAt: number | null;
+    errorInfo: {
+      error: Error;
+      lastFailedAt: number;
+      retryCount: number;
+    } | null;
+  };
+  ```
+</ResponseField>
+
+<ResponseField name="isStale" type="(override?: number) => boolean">
+  Returns `true` if the time elapsed since `lastFetchedAt` exceeds `staleTime`. Pass `override` (in ms) to check against a custom threshold instead of the configured `staleTime`.
+</ResponseField>
+
+<ResponseField name="isDataExpired" type="(override?: number) => boolean">
+  Returns `true` if the time elapsed since `lastFetchedAt` exceeds `cacheTime`. Pass `override` (in ms) to check against a custom threshold.
+</ResponseField>
+
+<ResponseField name="reset" type="(resetStoreState?: boolean) => void">
+  Tears down param subscriptions and clears pending timers and retry state. When `resetStoreState` is `true`, also resets the in-memory store state (including `queryCache`, `status`, and `error`) back to initial values.
+</ResponseField>
+
+### Properties
+
+<ResponseField name="status" type="'idle' | 'loading' | 'success' | 'error'">
+  The current status of the most recent fetch operation. Use the `QueryStatuses` constant for comparison:
+
+  ```ts
+  import { QueryStatuses } from '@storesjs/stores';
+
+  if (store.getState().status === QueryStatuses.Loading) { ... }
+  ```
+</ResponseField>
+
+<ResponseField name="error" type="Error | null">
+  The error thrown by the most recent failed fetch, or `null` when the last fetch succeeded or no fetch has occurred.
+</ResponseField>
+
+<ResponseField name="queryKey" type="string">
+  The current query key generated deterministically from the active params. Used as the key into `queryCache`.
+</ResponseField>
+
+<ResponseField name="queryCache" type="Record<string, CacheEntry<TData> | undefined>">
+  The full cache of all fetched entries, keyed by their query key strings.
+</ResponseField>
+
+<ResponseField name="lastFetchedAt" type="number | null">
+  Unix timestamp (ms) of the most recent successful fetch, or `null` if no successful fetch has occurred.
+</ResponseField>
+
+<ResponseField name="enabled" type="boolean">
+  Whether the store is currently configured to fetch. Reflects the resolved value of the `enabled` config option.
+</ResponseField>
+
+---
+
+## `FetchOptions`
+
+Optional second argument to `store.getState().fetch(params?, options?)`.
+
+<ParamField path="force" type="boolean" default="false">
+  When `true`, bypasses the stale check and always initiates a network request, even if fresh data is available. Note: if a pending fetch already matches the same params, the existing promise is returned rather than starting a duplicate request.
+</ParamField>
+
+<ParamField path="skipStoreUpdates" type="boolean | 'withCache'" default="false">
+  When `true`, the fetch runs in parallel and its result does not affect the store's state. The `AbortController` is not provided. Use `'withCache'` to run the fetch silently but still write the result to `queryCache`.
+</ParamField>
+
+<ParamField path="staleTime" type="number">
+  Overrides `config.staleTime` for this individual fetch call to determine whether cached data is fresh enough to return without re-fetching.
+</ParamField>
+
+<ParamField path="cacheTime" type="number">
+  Overrides `config.cacheTime` for the data fetched in this operation, controlling when it becomes eligible for pruning. Has no effect when `skipStoreUpdates: true`.
+</ParamField>
+
+<ParamField path="throwOnError" type="boolean" default="false">
+  When `true`, the returned promise rejects on fetch failure instead of resolving to `null`.
+</ParamField>
+
+<ParamField path="updateQueryKey" type="boolean">
+  Controls whether the store's `queryKey` is updated to reflect the params used for this fetch. Defaults to `false` for manual fetches. Useful when you want to pre-warm the cache for a different set of params without changing where `getData()` currently points.
+</ParamField>
+
+---
+
+## `QueryStatuses`
+
+A const object of status string literals for type-safe comparisons:
+
+```ts
+const QueryStatuses = {
+  Error:   'error',
+  Idle:    'idle',
+  Loading: 'loading',
+  Success: 'success',
+} as const;
+```
+
+---
+
+## Reactive Params
+
+Each key in `params` accepts one of three forms:
+
+```ts
+// 1. Static value — never changes
+params: { page: 1 }
+
+// 2. Reactive function — re-evaluated when $ dependencies change
+params: {
+  userId: ($, store) => $(authStore).userId,
+}
+
+// 3. queryParam wrapper — separates the fetch value from the key value
+import { queryParam } from '@storesjs/stores';
+
+params: {
+  // `key: false` excludes the value from the query key entirely
+  signal: queryParam(abortSignal, { key: false }),
+
+  // `key: fn` lets you use a smaller representation in the query key
+  filters: queryParam(
+    ($) => $(filtersStore).activeFilters,
+    { key: filters => filters.map(f => f.id).sort().join(',') }
+  ),
+}
+```
+
+---
+
+## Example
+
+```ts
+import { createBaseStore, createQueryStore } from '@storesjs/stores';
+import { time } from '@storesjs/stores/utils';
+
+type Account = { id: string; balance: number; name: string };
+type Params = { userId: string };
+
+const authStore = createBaseStore<{ userId: string }>(set => ({
+  userId: '',
+  setUserId: (userId: string) => set({ userId }),
+}));
+
+export const accountStore = createQueryStore<Account, Params>({
+  fetcher: async ({ userId }, abortController) => {
+    const res = await fetch(`/api/accounts/${userId}`, {
+      signal: abortController?.signal,
+    });
+    if (!res.ok) throw new Error('Failed to fetch account');
+    return res.json();
+  },
+  params: {
+    userId: ($) => $(authStore).userId,
+  },
+  staleTime: time.minutes(10),
+  maxRetries: 3,
+  onError: (error, retryCount) => {
+    console.error(`Account fetch failed (attempt ${retryCount}):`, error);
+  },
+});
+```
+
+```tsx
+// Inside a React component
+function AccountBalance() {
+  const account = accountStore(s => s.getData());
+  const isLoading = accountStore(s => s.getStatus('isLoading'));
+
+  if (isLoading) return <ActivityIndicator />;
+
+  return <Text>Balance: {account?.balance ?? 0}</Text>;
+}
+```
+
+```ts
+// Outside React — manual fetch
+const data = await accountStore.getState().fetch({ userId: 'user_123' }, { force: true });
+```
+
+### With Custom State
+
+```ts
+type Filters = { minBalance: number };
+
+const accountStore = createQueryStore<Account, Params, Filters>(
+  {
+    fetcher: fetchAccount,
+    params: { userId: ($) => $(authStore).userId },
+    staleTime: time.minutes(10),
+  },
+  set => ({
+    minBalance: 0,
+    setMinBalance: (minBalance: number) => set({ minBalance }),
+  })
+);
+```

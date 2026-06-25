@@ -1,0 +1,723 @@
+---
+title: "TypeScript Types Reference"
+sidebarTitle: "Types"
+description: "Key TypeScript types exported by @storesjs/stores: store shapes, persistence config, query store types, sync types, and storage interfaces."
+---
+
+`@storesjs/stores` is written in TypeScript and exports all of its public types. This reference documents each exported type grouped by concern, showing the exact definition from source so you can use them confidently in your own type annotations.
+
+---
+
+## Store Types
+
+### `Store<S, PersistedState?, PersistReturn?>`
+
+The top-level convenience union that resolves to either a `BaseStore` or a `PersistedStore` depending on whether `PersistedState` is provided.
+
+```ts
+type Store<
+  S,
+  PersistedState extends Partial<S> = never,
+  PersistReturn extends void | Promise<void> = void | Promise<void>
+> = [PersistedState] extends [never]
+  ? BaseStore<S>
+  : PersistedStore<S, PersistedState, PersistReturn>;
+```
+
+---
+
+### `BaseStore<S>`
+
+A store without persistence. Combines Zustand's `StoreApi<S>` with React hook call signatures and a typed `subscribe` overload.
+
+```ts
+type BaseStore<S> = UseBoundStoreWithEqualityFn<StoreApi<S>> & {
+  subscribe: SubscribeOverloads<S>;
+};
+```
+
+Calling a `BaseStore` as a function is the React hook interface — `store()`, `store(selector)`, and `store(selector, equalityFn)` are all valid call signatures.
+
+---
+
+### `PersistedStore<S, PersistedState, PersistReturn>`
+
+Extends `BaseStore<S>` with a `persist` namespace that exposes hydration, storage management, and option inspection.
+
+```ts
+type PersistedStore<
+  S,
+  PersistedState = Partial<S>,
+  PersistReturn extends void | Promise<void> = void | Promise<void>,
+> = UseStoreCallSignatures<S> & WithPersist<BaseStore<S>, PersistedState, PersistReturn>;
+```
+
+The `persist` object exposes:
+
+<ResponseField name="persist.clearStorage" type="() => void">
+  Removes the persisted entry from storage.
+</ResponseField>
+<ResponseField name="persist.getOptions" type="() => Partial<PersistOptions<S, PersistedState>>">
+  Returns the resolved persistence options.
+</ResponseField>
+<ResponseField name="persist.hasHydrated" type="() => boolean">
+  Returns `true` once the store has been hydrated from storage.
+</ResponseField>
+<ResponseField name="persist.onHydrate" type="(listener: (state: S) => void) => () => void">
+  Registers a listener that fires when hydration begins. Returns an unsubscribe function.
+</ResponseField>
+<ResponseField name="persist.onFinishHydration" type="(listener: (state: S) => void) => () => void">
+  Registers a listener that fires when hydration completes. Returns an unsubscribe function.
+</ResponseField>
+<ResponseField name="persist.rehydrate" type="() => Promise<void> | void">
+  Manually triggers re-hydration from storage.
+</ResponseField>
+<ResponseField name="persist.setOptions" type="(options: Partial<PersistOptions<S, PersistedState>>) => void">
+  Updates persistence options at runtime.
+</ResponseField>
+<ResponseField name="persist.hydrationPromise" type="() => Promise<void>">
+  Available only on async-persisted stores. Returns a promise that resolves once hydration completes.
+</ResponseField>
+
+---
+
+### `DerivedStore<Derived>`
+
+A read-only store produced by `createDerivedStore`. The `setState` and `getInitialState` methods are deprecated on this type (they throw at runtime). Adds `destroy()` and `flushUpdates()`.
+
+```ts
+type DerivedStore<S> = WithFlushUpdates<ReadOnlyDerivedStore<BaseStore<S>>>;
+```
+
+<ResponseField name="destroy" type="() => void">
+  Destroys the derived store and its internal subscriptions. Usually unnecessary
+  since derived stores self-clean when all subscribers leave, unless
+  `keepAlive: true` was specified.
+</ResponseField>
+
+<ResponseField name="flushUpdates" type="() => void">
+  Immediately flushes any pending debounced updates. Only applicable to derived
+  stores created with the `debounce` option.
+</ResponseField>
+
+---
+
+### `OptionallyPersistedStore<S, PersistedState, PersistReturn>`
+
+Used by store creators that accept optional persistence configuration. The `persist` namespace is present only when a `storageKey` is supplied.
+
+```ts
+type OptionallyPersistedStore<S, PersistedState, PersistReturn extends void | Promise<void> = void> =
+  UseStoreCallSignatures<S> &
+  Omit<BaseStore<S>, 'setState'> & {
+    persist?: PersistedStore<S, PersistedState, PersistReturn>['persist'];
+    setState(update: SetPartial<S>, replace?: false): PersistReturn;
+    setState(update: SetFull<S>, replace: true): PersistReturn;
+  };
+```
+
+---
+
+### `StoreActions<Store>`
+
+Picks all function-typed keys from a store's state type. This is the return type of `createStoreActions`.
+
+```ts
+type StoreActions<Store extends StoreApi<unknown>> =
+  Pick<InferStoreState<Store>, FunctionKeys<InferStoreState<Store>>>;
+```
+
+---
+
+### `InferStoreState<Store>`
+
+Extracts the state type `S` from any store that has a `getState` method.
+
+```ts
+type InferStoreState<Store> = Store extends { getState: () => infer T } ? T : never;
+```
+
+---
+
+### `InferPersistedState<Store>`
+
+Extracts the `PersistedState` type from a persisted store. Returns `never` for non-persisted stores.
+
+```ts
+type InferPersistedState<PersistedStore> =
+  PersistedStore extends Store<infer _, infer PersistedState>
+    ? PersistedState
+    : never;
+```
+
+---
+
+### `InferSetStateReturn<Store>`
+
+Extracts the return type of a store's `setState` method — `void` for synchronous stores, `Promise<void>` for async-persisted stores.
+
+```ts
+type InferSetStateReturn<Store> =
+  Store extends { setState(...args: SetStateArgs<infer S>): infer R }
+    ? R
+    : void;
+```
+
+---
+
+## Persistence Types
+
+### `PersistConfig<S, PersistedState, PersistReturn>`
+
+All options accepted when configuring persistence for a store.
+
+```ts
+type PersistConfig<
+  S,
+  PersistedState extends Partial<S> = Partial<S>,
+  PersistReturn = void
+> = {
+  storageKey: string;
+  version?: number;
+  partialize?: (state: Readonly<S>) => PersistedState;
+  merge?: (persistedState: PersistedState | undefined, currentState: S) => S;
+  migrate?: (persistedState: PersistedState, version: number) => PersistedState | Promise<PersistedState>;
+  onRehydrateStorage?: (state: S) => ((state?: S, error?: unknown) => void) | void;
+  serializer?: (storageValue: StorageValue<PersistedState>) => string;
+  deserializer?: (serializedState: unknown) => StorageValue<PersistedState>;
+  storage?: PersistReturn extends Promise<unknown> ? AsyncStorageInterface : SyncStorageInterface;
+  persistThrottleMs?: PersistReturn extends Promise<unknown> ? undefined : number;
+};
+```
+
+<ParamField body="storageKey" type="string" required>
+  The unique key under which the store's state is persisted.
+</ParamField>
+<ParamField body="version" type="number" default="0">
+  Schema version number. When the persisted version differs from this value,
+  `migrate` is called.
+</ParamField>
+<ParamField body="partialize" type="(state: Readonly<S>) => PersistedState">
+  Returns the subset of state to persist. Defaults to the entire state.
+</ParamField>
+<ParamField body="merge" type="(persisted, current) => S">
+  Custom merge strategy for hydration. Defaults to a shallow merge.
+</ParamField>
+<ParamField body="migrate" type="(persisted, version) => PersistedState | Promise<PersistedState>">
+  Called when the stored version does not match `version`.
+</ParamField>
+<ParamField body="onRehydrateStorage" type="(state: S) => callback | void">
+  A function called before hydration. May return a callback that is invoked
+  after hydration completes or when an error occurs.
+</ParamField>
+<ParamField body="serializer" type="(storageValue) => string">
+  Custom serializer. Defaults to the storage adapter's serializer, then
+  `JSON.stringify`.
+</ParamField>
+<ParamField body="deserializer" type="(serializedState) => StorageValue<PersistedState>">
+  Custom deserializer. Defaults to the storage adapter's deserializer, then
+  `JSON.parse`.
+</ParamField>
+<ParamField body="storage" type="SyncStorageInterface | AsyncStorageInterface">
+  Override the global storage adapter for this specific store.
+</ParamField>
+<ParamField body="persistThrottleMs" type="number">
+  Throttle rate for write operations in milliseconds. Not applicable to async
+  stores. Defaults to 3 s on iOS and 5 s on Android.
+</ParamField>
+
+---
+
+### `SyncStorageInterface<SerializedState>`
+
+Contract for synchronous storage adapters such as `localStorage` or MMKV.
+
+```ts
+type SyncStorageInterface<SerializedState = unknown> = {
+  readonly async?: false;
+  deserializer?<PersistedState>(serializedState: SerializedState): StorageValue<PersistedState>;
+  serializer?<PersistedState>(storageValue: StorageValue<PersistedState>): SerializedState;
+  clearAll(): void;
+  contains(key: string): boolean;
+  delete(key: string): void;
+  get(key: string): SerializedState | undefined;
+  getAllKeys(): string[];
+  set(key: string, value: SerializedState): void;
+};
+```
+
+---
+
+### `AsyncStorageInterface<SerializedState>`
+
+Contract for asynchronous storage adapters such as Chrome extension storage.
+
+```ts
+type AsyncStorageInterface<SerializedState = unknown> = {
+  readonly async: true;
+  deserializer?<PersistedState>(serializedState: SerializedState): StorageValue<PersistedState>;
+  serializer?<PersistedState>(storageValue: StorageValue<PersistedState>): SerializedState;
+  clearAll(): Promise<void>;
+  contains(key: string): Promise<boolean>;
+  delete(key: string): Promise<void>;
+  get(key: string): Promise<SerializedState | undefined>;
+  getAllKeys(): Promise<string[]>;
+  set(key: string, value: SerializedState): Promise<void>;
+};
+```
+
+The `async: true` discriminant allows the framework to detect at runtime whether a storage adapter is synchronous or asynchronous and adjust the `setState` return type accordingly.
+
+---
+
+## Query Store Types
+
+### `QueryStoreConfig<TQueryFnData, TParams, TData, CustomState>`
+
+Full configuration accepted by `createQueryStore`. See [configureStores](/api/configure-stores) for the subset of these fields that can be set as global defaults via `queryStoreDefaults`.
+
+Key fields:
+
+<ParamField body="fetcher" type="(params: TParams, abortController: AbortController | null) => TQueryFnData | Promise<TQueryFnData>" required>
+  The async function responsible for loading remote data.
+</ParamField>
+<ParamField body="params" type="QueryStoreParams">
+  Static, reactive, or `queryParam`-wrapped parameters forwarded to `fetcher`.
+</ParamField>
+<ParamField body="staleTime" type="number | ReactiveParam<number, S>" default="time.minutes(2)">
+  How long fetched data is considered fresh before background refetching may occur.
+</ParamField>
+<ParamField body="cacheTime" type="number | ((params: TParams) => number)" default="time.days(7)">
+  How long a cache entry is retained before pruning.
+</ParamField>
+<ParamField body="enabled" type="boolean | ReactiveParam<boolean, S>" default="true">
+  Whether the store actively fetches. Can be a static boolean or a reactive
+  getter.
+</ParamField>
+<ParamField body="transform" type="(data: TQueryFnData, params: TParams) => TData">
+  Transforms raw fetcher output into the shape stored in the cache. Required
+  when `TData` differs from `TQueryFnData`.
+</ParamField>
+<ParamField body="onFetched" type="(info: OnFetchedParams) => void">
+  Callback invoked after every successful fetch.
+</ParamField>
+<ParamField body="onError" type="(error: Error, retryCount: number) => void">
+  Callback invoked after every failed fetch attempt.
+</ParamField>
+<ParamField body="setData" type="(info: SetDataParams) => void">
+  Overrides the default behaviour of writing fetched data into the internal
+  query cache.
+</ParamField>
+<ParamField body="maxRetries" type="number" default="5">
+  Maximum number of automatic retry attempts after a fetch failure.
+</ParamField>
+<ParamField body="retryDelay" type="number | ((retryCount: number, error: Error) => number)">
+  Delay between retry attempts. Defaults to exponential backoff.
+</ParamField>
+<ParamField body="keepPreviousData" type="boolean" default="false">
+  When `true`, `getData()` returns stale data while a new fetch is in flight.
+</ParamField>
+<ParamField body="disableCache" type="boolean" default="false">
+  When `true`, fetched data is not written to the internal cache.
+</ParamField>
+<ParamField body="disableAutoRefetching" type="boolean" default="false">
+  When `true`, stale data is not automatically refreshed in the background.
+</ParamField>
+<ParamField body="abortInterruptedFetches" type="boolean" default="true">
+  When `true`, in-flight fetches are aborted when parameters change or all
+  subscribers unmount.
+</ParamField>
+<ParamField body="paramChangeThrottle" type="false | number | DebounceOptions" default="false">
+  Delay before triggering a fetch in response to parameter changes.
+</ParamField>
+<ParamField body="debugMode" type="boolean" default="false">
+  Enables verbose console logging for this store.
+</ParamField>
+<ParamField body="suppressStaleTimeWarning" type="boolean" default="false">
+  Suppresses the development warning emitted when `staleTime` is shorter than
+  `minStaleTime`.
+</ParamField>
+
+---
+
+### `QueryStoreState<TData, TParams, CustomState>`
+
+The full runtime state managed by a query store. Includes all internal state keys plus any custom state fields.
+
+```ts
+type QueryStoreState<TData, TParams extends Record<string, unknown>, CustomState = unknown> =
+  QueryStoreInternalState<TData, TParams> & CustomState;
+```
+
+Internal state fields:
+
+<ResponseField name="status" type="QueryStatus">
+  Current fetch status: `'idle'`, `'loading'`, `'success'`, or `'error'`.
+</ResponseField>
+<ResponseField name="enabled" type="boolean">
+  Whether the store is actively fetching.
+</ResponseField>
+<ResponseField name="error" type="Error | null">
+  The most recent fetch error, or `null`.
+</ResponseField>
+<ResponseField name="lastFetchedAt" type="number | null">
+  Timestamp of the last successful fetch.
+</ResponseField>
+<ResponseField name="queryCache" type="Record<string, CacheEntry<TData> | undefined>">
+  Internal map of cache entries keyed by generated query key strings.
+</ResponseField>
+<ResponseField name="queryKey" type="string">
+  The deterministic query key built from current parameters.
+</ResponseField>
+<ResponseField name="fetch" type="(params?, options?) => Promise<TData | null>">
+  Imperatively trigger a fetch. See `FetchOptions` for available options.
+</ResponseField>
+<ResponseField name="getData" type="(paramsOrQueryKey?) => CacheEntry<TData>['data']">
+  Returns cached data for the given parameters or query key.
+</ResponseField>
+<ResponseField name="getCacheEntry" type="(paramsOrQueryKey?) => CacheEntry<TData> | null">
+  Returns the full cache entry (data + metadata) for the given key.
+</ResponseField>
+<ResponseField name="getStatus" type="(statusKey?) => QueryStatusInfo | boolean">
+  Returns expanded status flags. Pass a `keyof QueryStatusInfo` to retrieve a
+  single flag.
+</ResponseField>
+<ResponseField name="isStale" type="(override?: number) => boolean">
+  Returns `true` when the current data has exceeded `staleTime`.
+</ResponseField>
+<ResponseField name="isDataExpired" type="(override?: number) => boolean">
+  Returns `true` when the current cache entry has exceeded `cacheTime`.
+</ResponseField>
+<ResponseField name="reset" type="(resetStoreState?: boolean) => void">
+  Tears down param subscriptions and timers. Optionally resets all state.
+</ResponseField>
+
+---
+
+### `QueryStatus`
+
+```ts
+type QueryStatus = 'idle' | 'loading' | 'success' | 'error';
+```
+
+The set of possible fetch statuses. Use the `QueryStatuses` constants object to avoid raw string comparisons.
+
+---
+
+### `QueryStatusInfo`
+
+```ts
+type QueryStatusInfo = {
+  isError: boolean;
+  isIdle: boolean;
+  isInitialLoad: boolean;
+  isLoading: boolean;
+  isSuccess: boolean;
+};
+```
+
+Expanded boolean flags returned by `getStatus()`.
+
+---
+
+### `CacheEntry<T>`
+
+A cache entry storing fetched data alongside fetch metadata and optional error information.
+
+```ts
+type CacheEntry<T> = {
+  cacheTime: number;
+  data: T | null;
+} & (
+  | {
+      errorInfo: { error: Error; lastFailedAt: number; retryCount: number };
+      lastFetchedAt: null;
+    }
+  | {
+      errorInfo: { error: Error; lastFailedAt: number; retryCount: number } | null;
+      lastFetchedAt: number;
+    }
+);
+```
+
+---
+
+### `FetchOptions`
+
+Options accepted by the `fetch` method on a query store's state.
+
+<ParamField body="force" type="boolean" default="false">
+  Forces a fetch even when fresh data is available in the cache.
+</ParamField>
+<ParamField body="staleTime" type="number">
+  Overrides the store's `staleTime` for this specific fetch call.
+</ParamField>
+<ParamField body="cacheTime" type="number">
+  Overrides the store's `cacheTime` for the data fetched in this call.
+</ParamField>
+<ParamField body="skipStoreUpdates" type="boolean | 'withCache'" default="false">
+  When `true`, the fetch runs silently without updating store state. When
+  `'withCache'`, the result is written to the cache but store state is
+  otherwise untouched.
+</ParamField>
+<ParamField body="updateQueryKey" type="boolean">
+  Whether to update the store's `queryKey` to reflect the params used in
+  this fetch. Defaults to `false` for manual fetches.
+</ParamField>
+<ParamField body="throwOnError" type="boolean" default="false">
+  When `true`, the returned promise rejects on fetch failure instead of
+  updating store error state silently.
+</ParamField>
+
+---
+
+### `QueryParam<T, State>`, `ReactiveParam<T, State>`, `QueryParamConfig<T, State>`
+
+```ts
+// A value derived reactively from other stores
+type ReactiveParam<T, State> = ($: DeriveGetter, store: StoreApi<State>) => T;
+
+// A queryParam(...) wrapper with custom key behaviour
+type QueryParamConfig<T, State> = {
+  readonly key: QueryParamKey<T>;
+  readonly value: NonFunction<T> | ReactiveParam<T, State>;
+};
+
+// Any valid param form: static value, reactive getter, or key-configured wrapper
+type QueryParam<T, State> =
+  | NonFunction<T>
+  | ReactiveParam<T, State>
+  | QueryParamConfig<T, State>;
+
+// Controls how the param appears in the query key
+type QueryParamKey<T> = false | ((value: T) => unknown);
+```
+
+---
+
+## Sync Types
+
+### `SyncConfig<T>`
+
+Options for enabling cross-client sync on a store.
+
+```ts
+type SyncConfig<T extends Record<string, unknown>> = {
+  key?: string;
+  fields?: ReadonlyArray<SyncStateKey<T>>;
+  engine?: SyncEngine;
+  merge?: { [K in SyncStateKey<T>]?: SyncMergeFn<T[K], T> };
+  injectStorageMetadata?: boolean;
+};
+```
+
+<ParamField body="key" type="string">
+  Identifier shared across clients to target the same store. Required when
+  the store is not persisted (no `storageKey` to fall back on).
+</ParamField>
+<ParamField body="fields" type="ReadonlyArray<SyncStateKey<T>>">
+  The specific state keys to synchronize. Defaults to all non-function
+  properties.
+</ParamField>
+<ParamField body="engine" type="SyncEngine">
+  Override the global sync engine for this store.
+</ParamField>
+<ParamField body="merge" type="object">
+  Per-field merge functions for conflict resolution. Use with caution.
+</ParamField>
+<ParamField body="injectStorageMetadata" type="boolean" default="false">
+  When `true`, sync metadata is embedded in the storage payload. Required for
+  engines that use storage writes as their transport (e.g. `chrome.storage`).
+</ParamField>
+
+---
+
+### `SyncEngine` interface
+
+Interface for pluggable multi-client synchronization.
+
+```ts
+interface SyncEngine {
+  readonly sessionId: string;
+  readonly injectStorageMetadata?: boolean;
+  register: {
+    <T extends Record<string, unknown>>(registration: SyncRegistration<T>): SyncHandle<T>;
+    (registration: SyncRegistration<Record<string, unknown>>): SyncHandle<Record<string, unknown>>;
+  };
+}
+```
+
+<ResponseField name="sessionId" type="string">
+  A unique identifier for this client session, used for conflict resolution and
+  self-update filtering.
+</ResponseField>
+<ResponseField name="injectStorageMetadata" type="boolean | undefined">
+  When `true`, the engine requires sync metadata to be embedded in persisted
+  storage values.
+</ResponseField>
+<ResponseField name="register" type="(registration: SyncRegistration<T>) => SyncHandle<T>">
+  Connects a store to the sync system. Returns a `SyncHandle` to manage the
+  sync lifecycle.
+</ResponseField>
+
+---
+
+### `SyncHandle<T>` interface
+
+Returned by `SyncEngine.register()`. Controls the lifecycle of a synced store.
+
+```ts
+interface SyncHandle<T extends Record<string, unknown>> {
+  destroy: () => void;
+  publish: ((update: SyncUpdate<T>) => void) | null;
+  hydrated?: () => boolean;
+  onFirstSubscribe?: () => void;
+  onLastUnsubscribe?: () => void;
+  onHydrated?: (callback: () => void) => void;
+}
+```
+
+<ResponseField name="destroy" type="() => void">
+  Permanently removes this store from the sync engine.
+</ResponseField>
+<ResponseField name="publish" type="((update: SyncUpdate<T>) => void) | null">
+  Broadcasts a state update to other clients. `null` for engines where
+  publishing is implicit (e.g. `chrome.storage`).
+</ResponseField>
+<ResponseField name="hydrated" type="() => boolean">
+  Returns `true` once the store has received its initial state from the engine.
+</ResponseField>
+<ResponseField name="onFirstSubscribe" type="() => void">
+  Called when the store's subscriber count goes from 0 to 1. Use for lazy
+  resource acquisition (e.g. opening a WebSocket).
+</ResponseField>
+<ResponseField name="onLastUnsubscribe" type="() => void">
+  Called when the store's subscriber count drops to 0. Use for resource cleanup.
+</ResponseField>
+<ResponseField name="onHydrated" type="(callback: () => void) => void">
+  Registers a one-time callback fired when hydration completes.
+</ResponseField>
+
+---
+
+### `SyncRegistration<T>`
+
+Passed to `SyncEngine.register()` to describe the store being registered.
+
+```ts
+type SyncRegistration<T extends Record<string, unknown>> = {
+  key: string;
+  fields: ReadonlyArray<SyncStateKey<T>>;
+  getState: () => T;
+  apply: (update: SyncUpdate<T>) => void;
+};
+```
+
+---
+
+### `SyncUpdate<T>`
+
+The payload broadcast between clients when state changes.
+
+```ts
+type SyncUpdate<T extends Record<string, unknown>> = {
+  replace: boolean;
+  sessionId: string;
+  timestamp: number;
+  values: Partial<T>;
+};
+```
+
+---
+
+## Derive Types
+
+### `DeriveGetter`
+
+The `$` argument received inside a `createDerivedStore` callback. Two overloads are available:
+
+```ts
+type DeriveGetter = {
+  // Proxy-based: access any property and the accessed paths become dependencies
+  <Store extends StoreApi<InferStoreState<Store>>>(store: Store): InferStoreState<Store>;
+
+  // Selector-based: subscribe to the result of a selector
+  <Store extends StoreApi<InferStoreState<Store>>, Selected>(
+    store: Store,
+    selector: Selector<InferStoreState<Store>, Selected>,
+    equalityFn?: EqualityFn<Selected>
+  ): Selected;
+};
+```
+
+---
+
+### `DeriveOptions<Derived>`
+
+Configuration for `createDerivedStore`. Can be passed as a plain equality function or as a config object.
+
+```ts
+type DeriveOptions<DerivedState = unknown> =
+  | EqualityFn<DerivedState>
+  | {
+      debounce?: number | DebounceOptions;
+      debugMode?: boolean | 'verbose';
+      equalityFn?: EqualityFn<DerivedState>;
+      keepAlive?: boolean;
+      lockDependencies?: boolean;
+    };
+```
+
+<ParamField body="debounce" type="number | DebounceOptions">
+  Adds a debounce delay before the derive function re-runs when dependencies
+  change. Accepts a plain number (ms) or a full `DebounceOptions` object for
+  leading/trailing/maxWait control.
+</ParamField>
+<ParamField body="debugMode" type="boolean | 'verbose'" default="false">
+  When `true`, logs dependency subscriptions on the first derivation run. When
+  `'verbose'`, logs on every run.
+</ParamField>
+<ParamField body="equalityFn" type="EqualityFn<DerivedState>" default="Object.is">
+  Custom equality check to suppress downstream updates when the derived value
+  has not meaningfully changed.
+</ParamField>
+<ParamField body="keepAlive" type="boolean" default="false">
+  When `true`, the derived store never self-destructs even when subscriber
+  count drops to zero.
+</ParamField>
+<ParamField body="lockDependencies" type="boolean" default="false">
+  When `true`, the dependency graph is fixed after the first derivation.
+  Subscriptions are established once and reused, avoiding subscription churn.
+  Safe when all `$` calls are unconditional and top-level.
+</ParamField>
+
+---
+
+## Hook Types
+
+### `ListenHandle`
+
+```ts
+type ListenHandle = {
+  isActive: boolean;
+  resubscribe: (options?: ResubscribeOptions) => void;
+  unsubscribe: () => void;
+};
+```
+
+Returned by `useListen` as a ref. See the [Hooks reference](/api/hooks) for full usage details.
+
+---
+
+### `UseListenOptions<Selected>`
+
+```ts
+type UseListenOptions<Selected> = {
+  enabled?: boolean;
+  equalityFn?: EqualityFn<Selected>;
+  fireImmediately?: boolean;
+  debugMode?: boolean;
+};
+```
+
+Options accepted by `useListen`. See the [Hooks reference](/api/hooks) for default values and reactive behaviour notes.

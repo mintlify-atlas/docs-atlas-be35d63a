@@ -1,0 +1,230 @@
+---
+title: "Using Stores Without React (Vanilla Build)"
+sidebarTitle: "Vanilla"
+description: "Enable the vanilla build of @storesjs/stores to use reactive stores in non-React environments. Configure the vanilla package condition and use the plain store API."
+---
+
+`@storesjs/stores` ships a vanilla build that exports all three store creators — `createBaseStore`, `createDerivedStore`, and `createQueryStore` — but strips the React hooks entirely. The same import path works in both builds; your bundler selects the right entry point via the `vanilla` package export condition. The result is a fully reactive store graph that works in Node.js scripts, browser vanilla JS, CLI tools, or any environment where React is not present.
+
+## Enabling the Vanilla Package Condition
+
+The `vanilla` condition must be activated in both your bundler and TypeScript configuration.
+
+<CodeGroup>
+
+```ts vite.config.ts
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  resolve: {
+    conditions: ['vanilla'],
+  },
+});
+```
+
+```js webpack.config.js
+module.exports = {
+  resolve: {
+    conditionNames: ['vanilla', 'import', 'require'],
+  },
+};
+```
+
+```js esbuild.config.js
+import { build } from 'esbuild';
+
+build({
+  conditions: ['vanilla'],
+  // ... other options
+});
+```
+
+</CodeGroup>
+
+### TypeScript Configuration
+
+Add `"vanilla"` to `customConditions` so the TypeScript compiler resolves the vanilla type declarations:
+
+```json
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "customConditions": ["vanilla"]
+  }
+}
+```
+
+## Imports Are Unchanged
+
+The import path is identical in vanilla mode. The bundler condition swap happens transparently:
+
+```ts
+import { createBaseStore, createDerivedStore, createQueryStore } from '@storesjs/stores';
+```
+
+## Stores as Plain Objects
+
+In the React build, stores are callable hooks — you can write `settingsStore(s => s.currency)` inside a component. In vanilla mode the hook call signature is not available. Stores are plain store objects and you interact with them through their API methods directly.
+
+## The Vanilla Store API
+
+Every store exposes the same object interface:
+
+```ts
+// Read current state
+const state = store.getState();
+
+// Write state — accepts a partial update or a full replacement
+store.setState({ currency: 'EUR' });           // merge
+store.setState({ ...state, currency: 'EUR' }, true); // replace
+
+// Subscribe to state changes
+const unsubscribe = store.subscribe(
+  state => state.currency,   // selector
+  (current, previous) => {
+    console.log('currency changed', current, previous);
+  },
+  { equalityFn: Object.is, fireImmediately: false }
+);
+
+// Unsubscribe when done
+unsubscribe();
+
+// Read the initial state as returned by the creator function
+const initial = store.getInitialState();
+```
+
+### Subscribe Options
+
+The third argument to `subscribe` accepts:
+
+| Option | Type | Description |
+|---|---|---|
+| `equalityFn` | `(a, b) => boolean` | Custom equality check for the selected slice. Defaults to `Object.is`. |
+| `fireImmediately` | `boolean` | If `true`, the listener is called once immediately with the current value on subscription. Defaults to `false`. |
+
+## Derived Stores in Vanilla
+
+Derived stores expose `getState()`, `subscribe()`, and `destroy()`. They do not expose `setState` or `getInitialState` — those methods exist on the type but throw if called.
+
+```ts
+import { createDerivedStore } from '@storesjs/stores';
+
+const formattedBalanceStore = createDerivedStore($ => {
+  const { currency } = $(settingsStore);
+  const balance = $(accountStore).getData()?.balance ?? 0;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(balance);
+});
+
+// Read the derived value
+console.log(formattedBalanceStore.getState());
+
+// Subscribe to changes
+const unsubscribe = formattedBalanceStore.subscribe(
+  s => s,
+  formatted => console.log('balance display:', formatted)
+);
+
+// Tear down when no longer needed
+formattedBalanceStore.destroy();
+```
+
+## Query Stores in Vanilla
+
+Query store state is accessible via `getState()`. Use `fetch()` to trigger a request and `getData()` to read the resolved data:
+
+```ts
+import { createQueryStore } from '@storesjs/stores';
+
+const accountStore = createQueryStore({
+  fetcher: fetchAccount,
+  params: { userId: $ => $(authStore).userId },
+});
+
+// Trigger a fetch imperatively
+accountStore.getState().fetch();
+
+// Read cached data (may be undefined if not yet fetched)
+const account = accountStore.getState().getData();
+
+// Subscribe to data changes
+accountStore.subscribe(
+  s => s.getData(),
+  (account) => console.log('account updated', account)
+);
+```
+
+## Persistence and Sync
+
+Both features work identically in vanilla mode. Add `storageKey` and/or `sync` to your store options exactly as you would in the React build:
+
+```ts
+export const settingsStore = createBaseStore<Settings>(
+  set => ({
+    currency: 'USD',
+    setCurrency: currency => set({ currency }),
+  }),
+  {
+    storageKey: 'settings',
+    partialize: state => ({ currency: state.currency }),
+    sync: true,
+  }
+);
+
+// Persistence API is the same
+await settingsStore.persist.hasHydrated();
+settingsStore.persist.rehydrate();
+```
+
+## Full Vanilla Example
+
+```ts
+import { createBaseStore, createDerivedStore, configureStores } from '@storesjs/stores';
+
+configureStores({ storageKeyPrefix: 'myapp:' });
+
+// Counter store
+type CounterState = {
+  count: number;
+  increment: () => void;
+  decrement: () => void;
+  reset: () => void;
+};
+
+export const counterStore = createBaseStore<CounterState>(
+  set => ({
+    count: 0,
+    increment: () => set(s => ({ count: s.count + 1 })),
+    decrement: () => set(s => ({ count: s.count - 1 })),
+    reset: () => set({ count: 0 }),
+  }),
+  { storageKey: 'counter' }
+);
+
+// Derived store — doubled count
+export const doubledCountStore = createDerivedStore($ => {
+  return $(counterStore).count * 2;
+});
+
+// Subscribe and react
+const unsubscribe = counterStore.subscribe(
+  s => s.count,
+  count => {
+    document.getElementById('count')!.textContent = String(count);
+    document.getElementById('doubled')!.textContent = String(doubledCountStore.getState());
+  },
+  { fireImmediately: true }
+);
+
+// Trigger state changes
+counterStore.getState().increment();
+counterStore.getState().increment();
+counterStore.getState().decrement();
+
+console.log(counterStore.getState().count); // 1
+```
+
+<Note>
+React hooks — `useListen` and `useStableValue` — are **not exported** from the vanilla build. They are exclusive to the React build (`index.ts`). The vanilla entry (`index.vanilla.ts`) re-exports everything from `index.shared.ts`, which contains only the store creators, configuration utilities, and type exports.
+</Note>
