@@ -1,5 +1,5 @@
 ---
-title: "configureStores API Reference"
+title: "configureStores: Global Configuration for All Stores"
 sidebarTitle: "configureStores"
 description: "configureStores sets global defaults for all stores — storage adapter, sync engine, query store defaults, storage key prefix, and logger."
 ---
@@ -36,8 +36,8 @@ function configureStores(config: Partial<StoresConfig>): void
 
 <ParamField body="logger" type="Logger">
   A custom logger for framework debug output. Defaults to a no-op logger in
-  production builds. Provide `{ debug, error }` to route framework messages
-  through your own logging infrastructure.
+  production builds. Provide `{ debug, error, info, warn }` to route framework
+  messages through your own logging infrastructure.
 </ParamField>
 
 <ParamField body="queryStoreDefaults" type="QueryStoreDefaults">
@@ -117,6 +117,8 @@ configureStores({
   logger: {
     debug: console.debug,
     error: console.error,
+    info: console.info,
+    warn: console.warn,
   },
 });
 ```
@@ -126,8 +128,7 @@ configureStores({
   development:
 
   ```
-  [stores]: configureStores() called after first store creation.
-  Call it earlier before creating any stores.
+  [stores]: configureStores() called after first store creation. Call it earlier before creating any stores.
   ```
 
   Always invoke `configureStores` at the top of your entry point, before any

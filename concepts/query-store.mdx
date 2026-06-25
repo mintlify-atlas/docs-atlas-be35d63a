@@ -1,5 +1,5 @@
 ---
-title: "Query Stores: Reactive Async Data Fetching"
+title: "Query Stores: Async Data Fetching with Reactive Params"
 sidebarTitle: "Query Store"
 description: "Query stores fetch, cache, and revalidate async data reactively. Parameters are tracked at runtime so the store refetches automatically when they change."
 ---
@@ -191,7 +191,7 @@ createQueryStore<Film[]>({
   maxRetries: 3,
 
   // Custom retry delay — receives retryCount and the error
-  retryDelay: (retryCount) => Math.min(1000 * 2 ** retryCount, 30_000),
+  retryDelay: (retryCount, error) => Math.min(1000 * 2 ** retryCount, 30_000),
 
   // Disable the store until a condition is met
   enabled: $ => $(authStore).isAuthenticated,
@@ -275,3 +275,21 @@ The custom state is merged into the store's state alongside all query fields (`g
 ## Automatic Fetch Deduplication
 
 If multiple components subscribe to the same query store simultaneously, only one fetch request is made. Concurrent callers of `fetch()` with matching params receive the same in-flight promise — no duplicate network requests are issued.
+
+## Query Key Utilities
+
+`createQueryStore` re-exports two helpers for working with the deterministically generated query keys that power the cache:
+
+```ts
+import { getQueryKey, parseQueryKey } from '@storesjs/stores';
+
+// Generate the canonical query key for a given params object
+const key = getQueryKey({ userId: '42', region: 'us-east-1' });
+// → '{"region":"us-east-1","userId":"42"}'
+
+// Parse a query key back into its params payload
+const params = parseQueryKey<{ userId: string; region: string }>(key);
+// → { userId: '42', region: 'us-east-1' }
+```
+
+These are useful when you need to pre-populate the cache, inspect stored entries directly via `queryCache`, or construct a `queryKey` to pass to `getData(key)` or `getCacheEntry(key)` without having the original params object on hand.

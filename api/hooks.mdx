@@ -1,5 +1,5 @@
 ---
-title: "React Hooks: useListen and useStableValue"
+title: "React Hooks Reference: useListen and useStableValue"
 sidebarTitle: "Hooks"
 description: "useListen subscribes to a store slice without triggering re-renders. useStableValue initializes a value once per component instance."
 ---
@@ -138,6 +138,15 @@ useListen(
   to explicitly pause the listener (e.g. while a long-lived component is
   off-screen) and later resume it with `resubscribe()`.
 </Note>
+
+<Warning>
+  `useListen` uses `useLayoutEffect` internally to attach and detach
+  subscriptions. In server-side rendering (SSR) environments this is a no-op —
+  the listener is never attached on the server. If you render on the server and
+  need to suppress the React SSR warning about `useLayoutEffect`, consider
+  wrapping the component in a client-only boundary or using the
+  `suppressHydrationWarning` approach appropriate to your framework.
+</Warning>
 
 ---
 

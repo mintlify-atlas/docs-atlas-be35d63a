@@ -1,5 +1,5 @@
 ---
-title: "createDerivedStore API Reference"
+title: "createDerivedStore | Derived Store Factory API Reference"
 sidebarTitle: "createDerivedStore"
 description: "createDerivedStore creates a read-only computed store that tracks dependencies via the $ accessor and re-derives when inputs change."
 ---
@@ -140,6 +140,10 @@ type DeriveOptions<DerivedState> =
 
 <ResponseField name="flushUpdates" type="() => void">
   Forces a synchronous re-derive and immediately notifies subscribers. Only meaningful for debounced derived stores — calling this on a non-debounced store is a no-op.
+</ResponseField>
+
+<ResponseField name="getSnapshot" type="() => Derived">
+  Reads the current derived value while activating a lazy derived store before the first subscription. Used internally by the React hook integration (`useSyncExternalStore`) to ensure the store is live before rendering. Equivalent to `getState` for most purposes, but guarantees the store is initialized.
 </ResponseField>
 
 <ResponseField name="getInitialState" type="() => Derived">

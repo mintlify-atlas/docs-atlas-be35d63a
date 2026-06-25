@@ -1,5 +1,5 @@
 ---
-title: "Using Stores in React Native"
+title: "Using Stores in React Native with MMKV and Batching"
 sidebarTitle: "React Native"
 description: "Set up @storesjs/stores in a React Native project. The react-native package condition is applied automatically; MMKV handles native storage."
 ---
@@ -77,7 +77,7 @@ On mobile devices, storage I/O is more expensive than on desktop browsers. The d
 |---|---|
 | iOS | 3 000 ms (3 seconds) |
 | Android | 5 000 ms (5 seconds) |
-| Web | No default throttle |
+| Web | 200 ms |
 
 You can override this per-store. Decrease it for state that must be durable immediately; increase it for state that changes frequently and can tolerate a longer flush window:
 

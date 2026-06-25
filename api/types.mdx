@@ -1,5 +1,5 @@
 ---
-title: "TypeScript Types Reference"
+title: "TypeScript Types: Stores, Persistence, Sync, and More"
 sidebarTitle: "Types"
 description: "Key TypeScript types exported by @storesjs/stores: store shapes, persistence config, query store types, sync types, and storage interfaces."
 ---
@@ -225,6 +225,27 @@ type PersistConfig<
   Throttle rate for write operations in milliseconds. Not applicable to async
   stores. Defaults to 3 s on iOS and 5 s on Android.
 </ParamField>
+
+---
+
+### `StorageValue<S, HideSyncMetadata?>`
+
+The shape of the value stored in and read from storage by the persistence layer.
+
+```ts
+type StorageValue<S, HideSyncMetadata extends boolean = false> = HideSyncMetadata extends true
+  ? {
+      state: S;
+      version?: number;
+    }
+  : {
+      state: S;
+      syncMetadata?: { origin?: string; timestamp?: number; fields?: Record<string, number> };
+      version?: number;
+    };
+```
+
+Pass `StorageValue<PersistedState>` (with `HideSyncMetadata` defaulting to `false`) in custom `serializer` and `deserializer` functions to get the full value including optional sync metadata. When `HideSyncMetadata` is `true`, the `syncMetadata` field is omitted from the type — useful when you know your store does not use sync.
 
 ---
 
@@ -497,6 +518,43 @@ type QueryParamKey<T> = false | ((value: T) => unknown);
 
 ## Sync Types
 
+### `FieldMetadata`
+
+Metadata recorded for each synced field write. A tuple of the write timestamp and the originating session ID.
+
+```ts
+type FieldMetadata = readonly [timestamp: number, sessionId: string];
+```
+
+---
+
+### `SyncStateKey<T>`
+
+Extracts only the non-function keys from a store state type `T`. These are the keys that can be included in `SyncConfig.fields` and used as sync targets.
+
+```ts
+type SyncStateKey<T extends Record<string, unknown>> = Extract<
+  {
+    [K in keyof T]-?: T[K] extends UnknownFunction ? never : K;
+  }[keyof T],
+  string
+>;
+```
+
+---
+
+### `SyncValues<T>`
+
+A partial object of the non-function state keys of `T`. This is the type of `values` in a `SyncUpdate`.
+
+```ts
+type SyncValues<T extends Record<string, unknown>> = Partial<T> & {
+  [K in SyncStateKey<T>]?: T[K];
+};
+```
+
+---
+
 ### `SyncConfig<T>`
 
 Options for enabling cross-client sync on a store.
@@ -624,7 +682,7 @@ type SyncUpdate<T extends Record<string, unknown>> = {
   replace: boolean;
   sessionId: string;
   timestamp: number;
-  values: Partial<T>;
+  values: SyncValues<T>;
 };
 ```
 

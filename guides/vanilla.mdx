@@ -1,7 +1,7 @@
 ---
-title: "Using Stores Without React (Vanilla Build)"
+title: "Using @storesjs/stores Without React (Vanilla Mode)"
 sidebarTitle: "Vanilla"
-description: "Enable the vanilla build of @storesjs/stores to use reactive stores in non-React environments. Configure the vanilla package condition and use the plain store API."
+description: "Enable the vanilla build of @storesjs/stores for use in non-React environments. Set the vanilla package condition and use plain store objects."
 ---
 
 `@storesjs/stores` ships a vanilla build that exports all three store creators — `createBaseStore`, `createDerivedStore`, and `createQueryStore` — but strips the React hooks entirely. The same import path works in both builds; your bundler selects the right entry point via the `vanilla` package export condition. The result is a fully reactive store graph that works in Node.js scripts, browser vanilla JS, CLI tools, or any environment where React is not present.
@@ -126,6 +126,9 @@ const unsubscribe = formattedBalanceStore.subscribe(
   formatted => console.log('balance display:', formatted)
 );
 
+// Flush pending updates (only relevant for debounced derived stores)
+formattedBalanceStore.flushUpdates();
+
 // Tear down when no longer needed
 formattedBalanceStore.destroy();
 ```
@@ -173,7 +176,7 @@ export const settingsStore = createBaseStore<Settings>(
 );
 
 // Persistence API is the same
-await settingsStore.persist.hasHydrated();
+settingsStore.persist.hasHydrated(); // returns boolean
 settingsStore.persist.rehydrate();
 ```
 

@@ -1,5 +1,5 @@
 ---
-title: "Chrome Extension Plugin for Stores"
+title: "Chrome Extension Plugin — Persist & Sync Store State"
 sidebarTitle: "Chrome Extension"
 description: "Use @storesjs/stores/chrome to persist and sync store state across Chrome extension contexts using chrome.storage and a first-class sync engine."
 ---
@@ -46,7 +46,7 @@ const storage = new ChromeStorageAdapter({ area: 'local' });
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `area` | `AreaName` | `'local'` | The `chrome.storage` area to read from and write to. |
-| `storageKeyPrefix` | `string` | `'stores/'` | Namespaces every key to avoid collisions with other extensions or libraries. |
+| `storageKeyPrefix` | `string` | `'stores:'` | Namespaces every key to avoid collisions with other extensions or libraries. |
 
 The adapter exposes `async = true`, so `@storesjs/stores` automatically awaits all storage operations before reporting hydration as complete.
 
@@ -123,16 +123,16 @@ export const { storage, syncEngine } = createSyncedChromeStorage({ area: 'local'
 
 <Step title="Configure global defaults (optional)">
 
-Pass the adapter to `configureStores` to use it as the default storage for every store in the extension without repeating it per-store:
+Pass the adapter and sync engine to `configureStores` to use them as the defaults for every store in the extension without repeating them per-store:
 
 ```ts
 // shared/configureStores.ts
 import { configureStores } from '@storesjs/stores';
 import { createSyncedChromeStorage } from '@storesjs/stores/chrome';
 
-configureStores({
-  storage: createSyncedChromeStorage({ area: 'local' }),
-});
+const { storage, syncEngine } = createSyncedChromeStorage({ area: 'local' });
+
+configureStores({ storage, syncEngine });
 ```
 
 </Step>

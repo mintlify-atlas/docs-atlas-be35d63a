@@ -1,5 +1,5 @@
 ---
-title: "Stores: Reactive State for React and React Native"
+title: "Stores: Reactive State Management for React and React Native"
 sidebarTitle: "Introduction"
 description: "Stores is a reactive state framework that composes base, derived, and query stores into a lazy, dependency-tracked graph for React and React Native."
 ---
@@ -121,6 +121,50 @@ Because stores are hooks when called as functions, you get React's rendering sem
 <Note>
   Outside of React components and hooks, always use `store.getState()` and `store.subscribe()` instead of calling the store as a function.
 </Note>
+
+## Virtual Stores
+
+A fourth store type, `createVirtualStore`, wraps a derive function that returns a store instance rather than a plain value. When dependencies change, the derive function runs again to produce a new store, and all existing subscriptions rebind to the new instance automatically. This lets you swap the backing store at runtime — useful for stores that are keyed on a reactive value such as an active user address or a selected account ID:
+
+```ts
+import { createVirtualStore } from '@storesjs/stores';
+
+export const userAssetsStore = createVirtualStore($ => {
+  const address = $(walletsStore).accountAddress;
+  return createUserAssetsStore(address);
+});
+```
+
+See the [Virtual Store concept page](/concepts/virtual-store) for full details.
+
+## Global Configuration
+
+`configureStores()` sets global defaults for all stores — storage backend, storage key prefix, query store defaults, sync engine, and logger. It must be called **before** any store is created; calling it afterward throws an error in development:
+
+```ts
+import { configureStores, time } from '@storesjs/stores';
+
+configureStores({
+  storageKeyPrefix: 'myapp:',
+  queryStoreDefaults: {
+    staleTime: time.minutes(5),
+  },
+});
+```
+
+See the [configure-stores API reference](/api/configure-stores) for all available options.
+
+## Utility Exports
+
+Stores ships several utility functions and constants alongside the store creators:
+
+- **`createStoreActions(store)`** — extracts action methods from a base store into a stable object, useful for referencing actions without subscribing to state
+- **`time`** — unit-conversion helpers (`time.minutes(n)`, `time.seconds(n)`, etc.) for expressing durations in milliseconds
+- **`shallowEqual`** / **`deepEqual`** — equality functions for use with selectors and derived stores
+- **`destroyStore(store)`** / **`destroyStores(...stores)`** — tear down one or more stores imperatively
+- **`QueryStatuses`** — enum-like constant for query status strings (`'idle'`, `'loading'`, `'success'`, `'error'`)
+
+See the [API reference](/api/helpers) for the full list.
 
 ## How Stores Relates to Zustand
 

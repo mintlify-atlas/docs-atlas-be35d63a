@@ -1,5 +1,5 @@
 ---
-title: "createQueryStore API Reference"
+title: "createQueryStore | Query Store Factory API Reference"
 sidebarTitle: "createQueryStore"
 description: "createQueryStore creates a store that fetches, caches, and revalidates async data. Parameters are tracked reactively to trigger automatic refetches."
 ---
@@ -267,6 +267,66 @@ const QueryStatuses = {
   Success: 'success',
 } as const;
 ```
+
+---
+
+## Re-exported Utilities
+
+The `createQueryStore` module re-exports the following utilities for working with query keys and parameters.
+
+<ResponseField name="getQueryKey" type="(keyPayload: Record<string, unknown>) => string">
+  Generates a deterministic query key string from a key payload object, consistent with the keys the store generates internally. Keys are sorted before serialization so that `{ b: 2, a: 1 }` and `{ a: 1, b: 2 }` produce the same string.
+
+  ```ts
+  import { getQueryKey } from '@storesjs/stores';
+
+  const key = getQueryKey({ userId: '123', page: 1 });
+  // '{"page":1,"userId":"123"}'
+  ```
+</ResponseField>
+
+<ResponseField name="parseQueryKey" type="(queryKey: string) => Record<string, unknown>">
+  Parses a query key string back into the key payload object it encodes. The inverse of `getQueryKey`.
+
+  ```ts
+  import { parseQueryKey } from '@storesjs/stores';
+
+  const payload = parseQueryKey('{"page":1,"userId":"123"}');
+  // { page: 1, userId: '123' }
+  ```
+</ResponseField>
+
+<ResponseField name="queryParam" type="(value, options: { key: false | ((value: T) => unknown) }) => QueryParamConfig">
+  Wraps a query parameter when its full fetcher value should be excluded from the query key or represented by a smaller key value. Pass `key: false` to exclude the param from the key entirely, or `key: fn` to use a derived representation.
+
+  ```ts
+  import { queryParam } from '@storesjs/stores';
+
+  params: {
+    // exclude from query key — does not affect cache keying
+    signal: queryParam(abortSignal, { key: false }),
+
+    // use only IDs in the query key instead of the full filter objects
+    filters: queryParam(
+      ($) => $(filtersStore).activeFilters,
+      { key: filters => filters.map(f => f.id).sort().join(',') }
+    ),
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="defaultRetryDelay" type="(retryCount: number, options?: { baseDelay?: number; maxDelay?: number }) => number">
+  The default retry delay function used when `retryDelay` is not configured. Implements exponential back-off starting at `baseDelay` (default `5s`), doubling each retry, capped at `maxDelay` (default `5m`). Can be imported and called directly when you need to extend the default behavior.
+
+  ```ts
+  import { defaultRetryDelay } from '@storesjs/stores';
+
+  retryDelay: (retryCount, error) => {
+    if (error.message.includes('rate limit')) return 60_000;
+    return defaultRetryDelay(retryCount);
+  }
+  ```
+</ResponseField>
 
 ---
 

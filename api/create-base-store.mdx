@@ -1,5 +1,5 @@
 ---
-title: "createBaseStore API Reference"
+title: "createBaseStore | Base Store Factory API Reference"
 sidebarTitle: "createBaseStore"
 description: "createBaseStore creates a local synchronous store from a state creator function. Accepts optional persistence and sync configuration."
 ---
@@ -98,11 +98,11 @@ type StateCreator<S> = (
     <ParamField path="persistThrottleMs" type="number">
       Throttle interval in milliseconds between successive writes to storage. Helps reduce I/O pressure when state changes rapidly. Defaults to `time.seconds(3)` on iOS and `time.seconds(5)` on Android. Only valid for synchronous storage — set to `undefined` for async storage.
     </ParamField>
-
-    <ParamField path="sync" type="SyncConfig | string | true">
-      Enables cross-tab or cross-context state synchronization. Pass `true` to inherit the sync key from `storageKey`, a plain string to use a custom key, or a `SyncConfig` object for full control.
-    </ParamField>
   </Expandable>
+
+  <ParamField path="sync" type="SyncConfig<S> | string | true">
+    Enables cross-tab or cross-context state synchronization. Pass `true` to inherit the sync key from `storageKey`, a plain string to use a custom key, or a `SyncConfig` object for full control. This option is a sibling of the `PersistConfig` fields, not nested inside them.
+  </ParamField>
 </ParamField>
 
 ---

@@ -1,7 +1,7 @@
 ---
-title: "Get Started with Stores in 5 Minutes"
+title: "Quickstart: Build a Reactive Store Graph with Stores"
 sidebarTitle: "Quickstart"
-description: "Install @storesjs/stores and build a reactive store graph with base, derived, and query stores in a few steps."
+description: "Install @storesjs/stores and build a reactive store graph with base, derived, and query stores in minutes. Includes a full composed React example."
 ---
 
 This guide walks you through installing `@storesjs/stores` and composing a reactive store graph — a base store for settings, a query store for remote account data, and a derived store that combines them both — then consuming the result in a React component.
@@ -217,7 +217,7 @@ function AccountSummary() {
 Before creating any stores, you can call `configureStores()` to set global defaults such as a custom storage backend, storage key prefix, or default query options:
 
 ```ts
-import { configureStores } from '@storesjs/stores';
+import { configureStores, time } from '@storesjs/stores';
 
 configureStores({
   storageKeyPrefix: 'myapp:',
